@@ -19,6 +19,8 @@ import (
 	"net/http"
 )
 
+var loginUserPattern = regexp.MustCompile(`^[a-zA-Z0-9_.@\\-]{1,128}$`)
+
 func probeSSH(address string, algorithms ...string) (ssh.PublicKey, error) {
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
@@ -48,6 +50,8 @@ func (g *guiSession) diagnose(request guiRequest) error {
 	role, address, running := g.state.Role, g.address, g.state.Running
 	g.state.LoginIdentity = ""
 	g.state.NativeSSHExitCode = nil
+	g.state.LoginCheckEngine = ""
+	g.state.CanTrust = false
 	g.mu.Unlock()
 	if !running {
 		return errors.New("请先启动连接，再执行检查")
@@ -99,6 +103,9 @@ func (g *guiSession) diagnose(request guiRequest) error {
 	}
 	g.step("tunnel", "working", "正在穿过中继，检查远端真实 HITL Connect 服务")
 	knownFile := filepath.Join(g.base, "gui-known-hosts")
+	if g.diagnoseManagedLogin(request, address, knownFile) {
+		return nil
+	}
 	key, err := probeSSHForSavedHost(address, knownFile)
 	if err != nil {
 		g.step("tunnel", "failed", "未到达远端 HITL Connect 服务。请结合中继状态，检查提供端进程与本机 HITL Connect 服务")
@@ -118,13 +125,15 @@ func (g *guiSession) diagnose(request guiRequest) error {
 		return nil
 	}
 	addr, _ := net.ResolveTCPAddr("tcp", address)
-	if checkErr != nil || check(address, addr, key) != nil {
-		if checkErr == nil {
-			var ke *knownhosts.KeyError
-			if e := check(address, addr, key); errors.As(e, &ke) && len(ke.Want) > 0 {
-				g.step("login", "failed", "HITL Connect 主机密钥发生变化，已阻止登录。请先核对目标电脑，未自动替换旧密钥")
-				return nil
-			}
+	if checkErr == nil {
+		checkErr = check(address, addr, key)
+	}
+	if checkErr != nil {
+		var ke *knownhosts.KeyError
+		unknown := os.IsNotExist(checkErr) || (errors.As(checkErr, &ke) && len(ke.Want) == 0)
+		if !unknown {
+			g.step("login", "failed", "HITL Connect 主机密钥变化或已撤销，已阻止登录。请先核对目标电脑，未自动替换旧密钥")
+			return nil
 		}
 		g.mu.Lock()
 		g.state.CanTrust = true
@@ -136,11 +145,11 @@ func (g *guiSession) diagnose(request guiRequest) error {
 		g.step("login", "pending", "HITL Connect 主机已信任。填写远端账号后，再点击“检查连接”测试实际登录")
 		return nil
 	}
-	if !regexp.MustCompile(`^[a-zA-Z0-9_.@\\-]{1,128}$`).MatchString(request.User) {
+	if !loginUserPattern.MatchString(request.User) {
 		return errors.New("远端账号格式不正确")
 	}
 	g.step("login", "working", "正在用本机已有 HITL Connect 密钥执行远端 whoami")
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), loginCheckTimeout)
 	defer cancel()
 	host, port, _ := net.SplitHostPort(address)
 	// ssh parses -o values as config text, so an unquoted path containing
@@ -159,6 +168,9 @@ func (g *guiSession) diagnose(request guiRequest) error {
 		args = append(args, "-o", "IdentitiesOnly=yes", "-i", keyPath)
 	}
 	args = append(args, "-p", port, "-l", request.User, host, "whoami")
+	g.mu.Lock()
+	g.state.LoginCheckEngine = "native"
+	g.mu.Unlock()
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Dir = g.base
 	// A nil stdin uses NUL on Windows. Win32 OpenSSH may then never send
@@ -169,16 +181,24 @@ func (g *guiSession) diagnose(request guiRequest) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
+	return g.finishLoginCheck(ctx, output, stderr.Bytes(), err)
+}
+
+func (g *guiSession) finishLoginCheck(ctx context.Context, output, stderr []byte, err error) error {
 	if err != nil {
 		code := 255
 		var failure *exec.ExitError
 		if errors.As(err, &failure) {
 			code = failure.ExitCode()
 		}
+		var remoteFailure *ssh.ExitError
+		if errors.As(err, &remoteFailure) {
+			code = remoteFailure.ExitStatus()
+		}
 		g.mu.Lock()
 		g.state.NativeSSHExitCode = &code
 		g.mu.Unlock()
-		output = stderr.Bytes()
+		output = stderr
 		for _, reason := range []string{"AUTHORIZED_ACCOUNT_NOT_LOGGED_ON", "ACCOUNT_PRIVILEGE_UNAVAILABLE", "ACCOUNT_PRIVILEGE_MISMATCH", "AUTHORIZED_ACCOUNT_CHANGED_OR_DISABLED", "AUDIT_UNAVAILABLE"} {
 			if strings.Contains(string(output), reason) {
 				g.connectionError(errors.New(reason))
@@ -190,12 +210,12 @@ func (g *guiSession) diagnose(request guiRequest) error {
 		case errors.Is(err, exec.ErrNotFound):
 			message = "未找到本机系统连接客户端"
 		case ctx.Err() != nil:
-			message = "HITL Connect 登录检查超时（15 秒），已结束检查"
+			message = "HITL Connect 登录检查超时（35 秒），已结束检查"
 		case strings.Contains(string(output), "HOST IDENTIFICATION HAS CHANGED"):
 			message = "HITL Connect 主机密钥变化，已阻止登录"
 		case strings.Contains(string(output), "Load key"), strings.Contains(string(output), "UNPROTECTED PRIVATE KEY"):
 			message = "本机 HITL Connect 私钥无法使用，请检查文件格式、权限或解锁密钥代理"
-		case strings.Contains(string(output), "Permission denied"):
+		case strings.Contains(string(output), "Permission denied"), strings.Contains(err.Error(), "unable to authenticate"):
 			message = "远端拒绝 HITL Connect 登录凭据。通道已通；请核对远端账号、公钥安装位置与 ACL。此检查不会尝试 Windows 密码"
 		}
 		g.step("login", "failed", message)

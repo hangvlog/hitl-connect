@@ -2,7 +2,7 @@
 
 Use only devices and accounts authorized by their owner. Preserve all existing identity, trust, pairing and audit data. Do not disable endpoint security or override PowerShell policy.
 
-`hitl-connect-cli agent help` returns supported operations. Use `--dir <private-profile>` consistently. stdout uses the `hitl-connect.agent.v1` JSON schema. Exit 0 means that action/snapshot succeeded; only `loginVerified: true`, `nativeSshExitCode: 0` and the expected `loginIdentity` prove a login.
+`hitl-connect-cli agent help` returns supported operations. Use `--dir <private-profile>` consistently. stdout uses the `hitl-connect.agent.v1` JSON schema. Exit 0 means that action/snapshot succeeded; only `loginVerified: true`, `nativeSshExitCode: 0` and the expected `loginIdentity` prove a login. The legacy `nativeSshExitCode` field reports the login command exit status for both engines; `state.loginCheckEngine` identifies `embedded` or `native`.
 
 Provider first use:
 

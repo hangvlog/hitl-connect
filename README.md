@@ -18,7 +18,7 @@ go build -trimpath -o ../hitl-connect-cli .
 Go 1.26.3 is used by CI; dependencies are pinned in go.mod/go.sum. Windows binary builds also require Python 3.12+. From a clean committed checkout:
 
 ```sh
-python build-windows-binaries.py ../windows-output/HITL-Connect-Windows 2026.10.15-agent.1 --installer-helper
+python build-windows-binaries.py ../windows-output/HITL-Connect-Windows 2026.10.15-agent.2 --installer-helper
 ```
 
 Outputs are GUI, CLI and installer helper executables with source revision metadata. See [Windows packaging](installer/README.md). CI validation artifacts are **unsigned test builds**, not trusted signed releases.
@@ -45,6 +45,8 @@ Connection codes contain the relay address and access authority; they are privat
 ## Security and limitations
 
 WSS protects the connection to the relay; device-to-device TLS with pinned certificates protects forwarded payloads from the relay. SSH also encrypts SSH sessions. The relay still observes connection metadata. Encryption does not hide destination IPs or program behavior from endpoint administrators.
+
+GUI/agent login checks using the application-managed `ssh-login.key` and an existing host pin use the built-in SSH client: one handshake validates the pinned key, authenticates and runs `whoami`, without a system SSH process. Imported keys and agent/default-identity selection retain the native OpenSSH path. This changes login-check latency, not file-transfer throughput.
 
 Authorization, identity and host-trust checks remain enabled. Embedded Windows sessions run under the explicitly selected logged-in account, not the service's SYSTEM identity. Administrator mode is an explicit choice. Some advanced system OpenSSH migration tools retain historical service/file aliases; these do not conceal SSH capabilities or grant permission to bypass security controls.
 

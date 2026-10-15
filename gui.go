@@ -48,6 +48,7 @@ type guiState struct {
 	Version            string                `json:"version"`
 	Configured         bool                  `json:"configured"`
 	Problem            *connectionProblem    `json:"problem,omitempty"`
+	LoginCheckEngine   string                `json:"loginCheckEngine,omitempty"`
 	NativeSSHExitCode  *int                  `json:"nativeSshExitCode,omitempty"`
 	Managed            bool                  `json:"managed"`
 	ManagedUnavailable bool                  `json:"managedUnavailable,omitempty"`
@@ -145,6 +146,7 @@ func (g *guiSession) step(id, status, detail string) {
 func (g *guiSession) stepLocked(id, status, detail string) {
 	if id == "login" && (status == "pending" || status == "working") {
 		g.state.NativeSSHExitCode = nil
+		g.state.LoginCheckEngine = ""
 	}
 	if id == "login" && status != "passed" {
 		g.state.LoginIdentity = ""
