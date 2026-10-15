@@ -18,7 +18,7 @@ go build -trimpath -o ../hitl-connect-cli .
 Go 1.26.3 is used by CI; dependencies are pinned in go.mod/go.sum. Windows binary builds also require Python 3.12+. From a clean committed checkout:
 
 ```sh
-python build-windows-binaries.py ../windows-output/HITL-Connect-Windows 2026.10.15-agent.2 --installer-helper
+python build-windows-binaries.py ../windows-output/HITL-Connect-Windows 2026.10.15-agent.3 --installer-helper
 ```
 
 Outputs are GUI, CLI and installer helper executables with source revision metadata. See [Windows packaging](installer/README.md). CI validation artifacts are **unsigned test builds**, not trusted signed releases.
@@ -50,7 +50,7 @@ GUI/agent login checks using the application-managed `ssh-login.key` and an exis
 
 Authorization, identity and host-trust checks remain enabled. Embedded Windows sessions run under the explicitly selected logged-in account, not the service's SYSTEM identity. Administrator mode is an explicit choice. Some advanced system OpenSSH migration tools retain historical service/file aliases; these do not conceal SSH capabilities or grant permission to bypass security controls.
 
-v2 is the default. A compatible deployment may explicitly enable `protocol: "v3"` in the local profile. v3 separates control and data channels; it does not resume interrupted SSH streams or replay commands. Capacity waits are bounded and do not terminate existing sessions.
+v2 is the default. A compatible deployment may explicitly enable `protocol: "v3"` in the local profile. v3 separates control and data channels; it does not resume interrupted SSH streams or replay commands. Capacity waits are bounded and do not terminate existing sessions. A caller forwards up to eight simultaneous connections; a bounded waiter can now wait up to 15 seconds within the existing 25-second establishment budget, leaving time for pairing and TLS. Saturation beyond that budget still fails explicitly; commands are never replayed. Transfer framing reuses per-stream buffers without changing the wire format, encryption or 32 KiB frame limit.
 
 [Windows usage](README-WINDOWS.md) · [Agent operations](AGENT-SETUP.md) · [Security review](SECURITY-REVIEW.md) · [Privacy](PRIVACY.md)
 

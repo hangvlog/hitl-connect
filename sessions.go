@@ -181,14 +181,15 @@ func forward(ctx context.Context, c *Config, peerID, service, bind string) error
 		}
 		// Admission is part of the existing 25-second establishment budget.
 		// Keep one bounded waiter here instead of dropping the ninth connection
-		// or spawning unbounded goroutines under load.
+		// or spawning unbounded goroutines under load. Wait at most 15 seconds,
+		// retaining 10 seconds of the setup budget for pairing, TLS and readiness.
 		dialCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		select {
 		case slots <- struct{}{}:
 		default:
 			started, trace := time.Now(), newTransportTrace()
 			reportLifecycle(c, trace, "dial", "waiting", "admission", nil, 0, map[string]any{"activeLimit": cap(slots)})
-			waitCtx, stopWait := context.WithTimeout(dialCtx, 5*time.Second)
+			waitCtx, stopWait := context.WithTimeout(dialCtx, 15*time.Second)
 			err := waitForwardSlot(waitCtx, slots)
 			stopWait()
 			if err != nil {

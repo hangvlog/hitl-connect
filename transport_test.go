@@ -324,7 +324,7 @@ func TestForwardWaitsForCapacityWithoutDroppingExistingConnections(t *testing.T)
 		}
 	}
 	queued := connections[8]
-	queued.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	queued.SetReadDeadline(time.Now().Add(6 * time.Second))
 	_, err = queued.Read(make([]byte, 1))
 	var timeout net.Error
 	if !errors.As(err, &timeout) || !timeout.Timeout() {

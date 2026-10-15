@@ -175,13 +175,14 @@ func pipe(ctx context.Context, tcp *net.TCPConn, encrypted *tls.Conn) error {
 func pipeMeasured(ctx context.Context, tcp *net.TCPConn, encrypted *tls.Conn, metrics *sessionMetrics) error {
 	done := make(chan error, 2)
 	go func() {
-		buffer := make([]byte, maxChunk)
+		writer := frameWriter{}
+		buffer := writer.buffer[5:]
 		for {
 			n, err := tcp.Read(buffer)
 			if n > 0 {
 				started := time.Now()
 				encrypted.SetWriteDeadline(started.Add(60 * time.Second))
-				if sendErr := writeFrame(encrypted, 1, buffer[:n]); sendErr != nil {
+				if sendErr := writer.write(encrypted, 1, buffer[:n]); sendErr != nil {
 					done <- streamError("peer", "write", sendErr)
 					return
 				}
@@ -190,7 +191,7 @@ func pipeMeasured(ctx context.Context, tcp *net.TCPConn, encrypted *tls.Conn, me
 			}
 			if err == io.EOF {
 				encrypted.SetWriteDeadline(time.Now().Add(60 * time.Second))
-				done <- streamError("peer", "half-close", writeFrame(encrypted, 2, nil))
+				done <- streamError("peer", "half-close", writer.write(encrypted, 2, nil))
 				return
 			}
 			if err != nil {
@@ -200,8 +201,9 @@ func pipeMeasured(ctx context.Context, tcp *net.TCPConn, encrypted *tls.Conn, me
 		}
 	}()
 	go func() {
+		reader := frameReader{}
 		for {
-			kind, payload, err := readFrame(encrypted)
+			kind, payload, err := reader.read(encrypted)
 			if err != nil {
 				done <- streamError("peer", "read", err)
 				return
@@ -216,7 +218,7 @@ func pipeMeasured(ctx context.Context, tcp *net.TCPConn, encrypted *tls.Conn, me
 			}
 			started := time.Now()
 			tcp.SetWriteDeadline(started.Add(60 * time.Second))
-			if _, err = io.Copy(tcp, bytes.NewReader(payload)); err != nil {
+			if err = writeFrameBytes(tcp, payload); err != nil {
 				done <- streamError("local", "write", err)
 				return
 			}

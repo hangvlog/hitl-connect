@@ -132,6 +132,8 @@ func (e *embeddedSSH) allows(peer, device, user string, key ssh.PublicKey) bool 
 type sshFrameConn struct {
 	net.Conn
 	pending []byte
+	reader  frameReader
+	writer  frameWriter
 	writeMu sync.Mutex
 }
 
@@ -140,7 +142,7 @@ func (c *sshFrameConn) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	for len(c.pending) == 0 {
-		kind, data, err := readFrame(c.Conn)
+		kind, data, err := c.reader.read(c.Conn)
 		if err != nil {
 			return 0, err
 		}
@@ -162,7 +164,7 @@ func (c *sshFrameConn) Write(p []byte) (int, error) {
 	total := 0
 	for len(p) > 0 {
 		n := min(len(p), maxChunk)
-		if err := writeFrame(c.Conn, 1, p[:n]); err != nil {
+		if err := c.writer.write(c.Conn, 1, p[:n]); err != nil {
 			return total, err
 		}
 		total += n
