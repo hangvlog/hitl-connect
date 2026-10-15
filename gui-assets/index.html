@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HITL Connect · 连接状态</title><link rel="icon" type="image/svg+xml" href="/brand.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main class="shell">
+<header><div class="brand"><img class="logo" src="/brand.svg" alt=""><div><strong>HITL Connect</strong><small>允许一次，粘贴一次，持续连接</small></div></div><span id="running" class="badge">未启动</span></header>
+<div id="notice" role="alert" hidden></div>
+<div class="layout"><aside class="panel settings"><h2>你想做什么？</h2>
+<button class="role active" id="host-role"><b>让别人连接这台电脑</b><span>提供 HITL Connect 远程访问服务</span></button>
+<button class="role" id="connect-role"><b>连接其他电脑</b><span>使用对方提供的连接码</span></button>
+<div id="caller-fields" hidden><label for="code">连接码</label><textarea id="code" spellcheck="false" rows="4" placeholder="首次连接时，粘贴 hitl1. 开头的完整连接码"></textarea><p id="saved" class="hint">连接码只在本机用于配对。</p></div>
+<div id="provider-fields"><label for="relay">中继服务器地址（首次提供连接必填）</label><input id="relay" type="url" placeholder="https://relay.example.invalid" autocomplete="off" spellcheck="false"><p class="hint">由设备所有者填写，仅保存在本机配置中。已有配置可留空。</p><label for="local-user">允许登录的本机账号</label><input id="local-user" autocomplete="off"><p id="embedded-ssh-hint" class="hint">Windows 使用 HITL Connect 内置连接服务。点击允许连接会授权持码设备登录此账号，并通过一次系统授权安装 HITL Connect 后台服务。账号需保持已登录；锁屏不影响连接。</p><label for="privilege">Windows 远程会话权限</label><select id="privilege"><option value="standard">普通账号权限</option><option value="administrator">管理员权限（明确授权）</option></select><p class="hint">管理员模式允许持码设备修改系统；仅适用于已是管理员的账号。保留登录与会话审计，可随时停用连接码。</p></div>
+<p id="system-ssh-hint" class="hint" hidden>当前使用 HITL Connect 系统连接模式处理登录与文件传输。请保持 HITL 后台进程运行；关闭网页不影响连接。</p>
+<details><summary>端口设置</summary><div id="target-wrap"><label for="target">本机服务地址（内置模式忽略）</label><input id="target" value="127.0.0.1:22" spellcheck="false"></div><div id="listen-wrap" hidden><label for="listen">本机映射地址</label><input id="listen" value="127.0.0.1:2222" spellcheck="false"></div></details>
+<div class="actions"><button id="start" class="primary">允许连接并生成连接码</button><button id="stop" disabled>停止</button></div>
+<p class="hint">账号、密钥和配对会自动保存。停止后可直接恢复连接。</p>
+<div id="invitation" class="share" hidden><strong>分享给获准访问的人</strong><p>对方粘贴即可登录，无需再次批准。连接码不设到期时间，可供多台设备使用，各自保留独立身份和密钥。重启后继续有效，由你主动停用或更换。</p><button id="copy-key">复制连接码</button><small id="key-status"></small></div>
+<div id="grant-status" class="share" hidden><p id="grant-detail"></p><button id="renew-code">更换连接码</button><button id="disable-code">停用连接码</button></div>
+</aside>
+<section class="panel status"><div class="section-head"><div><p class="eyebrow">连接检查</p><h1 id="headline">从这里开始连接</h1></div><button id="diagnose" disabled>检查连接</button></div><p class="lead">临时断线会自动恢复，需要处理的问题会注明在哪一端。</p>
+<div id="problem" class="trust" role="status" hidden><b id="problem-code"></b><p id="problem-action"></p></div>
+<div id="steps" class="steps" aria-live="polite"></div>
+<div id="host-trust" class="trust" hidden><b>HITL Connect 主机指纹</b><code id="fingerprint"></code><p id="trust-hint">请与提供方核对主机指纹。</p><button id="trust">指纹一致，信任此主机</button></div>
+<div id="login-fields" class="login" hidden><p class="hint">粘贴连接码后，自动配置并验证登录。私钥留在本机，无需传文件或再次批准。</p><details><summary>使用已有连接配置（高级）</summary><label><input type="checkbox" id="manual-ssh">保留手动账号与主机指纹流程</label><label for="user">远端账号</label><input id="user" placeholder="例如 alice 或 DESKTOP\alice" autocomplete="off"><label for="keypath">已有私钥的完整路径（可选）</label><input id="keypath" placeholder="留空自动创建本设备专用密钥" spellcheck="false"><p class="hint">私钥始终留在本机，不会上传。</p></details></div>
+<div id="identity" class="success" hidden></div><p id="checked" class="timestamp"></p>
+</section></div>
+<section class="panel log"><div class="section-head"><h2>诊断记录</h2><button id="copy-report">复制脱敏诊断</button></div><p class="hint">不包含连接码、令牌、私钥、文件路径或登录账号。</p><ol id="events"><li>等待启动。</li></ol></section>
+<footer><span>仅在本机开放此面板。关闭页面不会停止连接；双击程序可重新打开。<br><span id="product-version">HITL Connect</span></span><button id="quit">退出程序</button></footer>
+</main></body></html>

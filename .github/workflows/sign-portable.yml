@@ -1,0 +1,87 @@
+name: Sign portable binaries (requires SignPath approval)
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version: YYYY.MM.DD-agent.N'
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Require actual signing enrollment
+        shell: pwsh
+        env:
+          SIGNPATH_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORG: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY }}
+        run: |
+          if (!$env:SIGNPATH_TOKEN -or !$env:SIGNPATH_ORG -or !$env:SIGNPATH_POLICY) { throw 'SignPath enrollment/configuration is required; no unsigned fallback.' }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.3'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: go test ./...
+      - name: Build exact committed source
+        shell: pwsh
+        run: |
+          python build-windows-binaries.py "$env:RUNNER_TEMP/build/kit" "$env:RELEASE_VERSION" --installer-helper
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory "$env:RUNNER_TEMP/sign-input" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/build/kit/*.exe","$env:RUNNER_TEMP/build/HITL-Connect-Installer-Helper.exe" "$env:RUNNER_TEMP/sign-input/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: unsigned
+        with:
+          name: signing-input-${{ github.sha }}
+          path: ${{ runner.temp }}/sign-input/
+          if-no-files-found: error
+      - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: hitl-connect
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY }}
+          artifact-configuration-slug: windows-binaries
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ runner.temp }}/signed
+          parameters: |
+            version: ${{ toJSON(inputs.version) }}
+      - name: Verify signed outputs and write final hashes
+        shell: pwsh
+        run: |
+          $expected = @('HITL-Connect.exe','hitl-connect-cli.exe','HITL-Connect-Installer-Helper.exe')
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/signed" -File)
+          if ($files.Count -ne $expected.Count) { throw 'Unexpected signed file count' }
+          foreach ($file in $files) {
+            if ($file.Name -notin $expected) { throw 'Unexpected signed filename' }
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) { throw 'Missing valid timestamped signature' }
+            if ($signature.SignerCertificate.Subject -notmatch 'SignPath Foundation') { throw 'Unexpected publisher' }
+          }
+          & "$env:RUNNER_TEMP/signed/hitl-connect-cli.exe" agent help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item LICENSE,NOTICE,THIRD-PARTY-LICENSES.txt,PRIVACY.md,CODE-SIGNING.md "$env:RUNNER_TEMP/signed/"
+          Get-ChildItem "$env:RUNNER_TEMP/signed" -File | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash,$_.Name
+          } | Set-Content "$env:RUNNER_TEMP/signed-sha256.txt"
+          Move-Item "$env:RUNNER_TEMP/signed-sha256.txt" "$env:RUNNER_TEMP/signed/SHA256SUMS.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-portable-${{ github.sha }}
+          path: ${{ runner.temp }}/signed/
+          if-no-files-found: error
