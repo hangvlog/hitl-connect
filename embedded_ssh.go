@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ type embeddedSSH struct {
 	policy  hostAuthorization
 	signers []ssh.Signer
 	auditMu sync.Mutex
+	jobs    *jobManager
 }
 
 func embeddedPolicy(profile string) (hostAuthorization, bool) {
@@ -183,7 +186,7 @@ func (e *embeddedSSH) serve(ctx context.Context, raw net.Conn, peer, device stri
 		if err := e.audit("key-authorized", peer, fp, session, "", 0); err != nil {
 			return nil, errors.New("AUDIT_UNAVAILABLE")
 		}
-		return &ssh.Permissions{Extensions: map[string]string{"fingerprint": fp}}, nil
+		return &ssh.Permissions{Extensions: map[string]string{"fingerprint": fp, "publicKey": string(ssh.MarshalAuthorizedKey(key))}}, nil
 	}}
 	for _, s := range e.signers {
 		config.AddHostKey(s)
@@ -228,7 +231,7 @@ func (e *embeddedSSH) serve(ctx context.Context, raw net.Conn, peer, device stri
 		go func() {
 			defer workers.Done()
 			defer func() { <-slots }()
-			e.session(sessionCtx, channel, reqs, peer, server.Permissions.Extensions["fingerprint"], session)
+			e.session(sessionCtx, channel, reqs, peer, device, server.Permissions.Extensions["publicKey"], server.Permissions.Extensions["fingerprint"], session)
 		}()
 	}
 	cancel()
@@ -236,7 +239,7 @@ func (e *embeddedSSH) serve(ctx context.Context, raw net.Conn, peer, device stri
 	_ = e.audit("disconnected", peer, server.Permissions.Extensions["fingerprint"], session, "", 0)
 	return <-ended
 }
-func (e *embeddedSSH) session(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request, peer, fp, session string) {
+func (e *embeddedSSH) session(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request, peer, device, publicKey, fp, session string) {
 	defer ch.Close()
 	for req := range requests {
 		operation, command := "", ""
@@ -276,7 +279,30 @@ func (e *embeddedSSH) session(ctx context.Context, ch ssh.Channel, requests <-ch
 			cancel()
 		}()
 		go func() { <-workerCtx.Done(); _ = ch.Close() }()
-		exit, err := runEmbeddedWorker(workerCtx, e.policy, operation, command, ch)
+		var exit int
+		var err error
+		if operation == "exec" && strings.HasPrefix(command, "hitl-job ") {
+			var request jobRequest
+			data, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(command, "hitl-job "))
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			var extra any
+			if decodeErr != nil || decoder.Decode(&request) != nil || decoder.Decode(&extra) != io.EOF || e.jobs == nil {
+				exit = 2
+				_ = json.NewEncoder(ch).Encode(jobReply{Code: "INVALID_JOB_REQUEST"})
+			} else {
+				result := e.jobs.request(peer+"\n"+fp, request, func() bool {
+					key, err := plainSSHKey([]byte(publicKey))
+					return err == nil && e.allows(peer, device, e.policy.User, key)
+				})
+				if !result.OK {
+					exit = 2
+				}
+				_ = json.NewEncoder(ch).Encode(result)
+			}
+		} else {
+			exit, err = runEmbeddedWorker(workerCtx, e.policy, operation, command, ch)
+		}
 		if err != nil {
 			fmt.Fprintln(ch.Stderr(), err.Error())
 		}

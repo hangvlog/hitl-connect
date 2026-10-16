@@ -50,7 +50,7 @@ GUI/agent login checks using the application-managed `ssh-login.key` and an exis
 
 Authorization, identity and host-trust checks remain enabled. Embedded Windows sessions run under the explicitly selected logged-in account, not the service's SYSTEM identity. Administrator mode is an explicit choice. Some advanced system OpenSSH migration tools retain historical service/file aliases; these do not conceal SSH capabilities or grant permission to bypass security controls.
 
-v2 is the default. A compatible deployment may explicitly enable `protocol: "v3"` in the local profile. v3 separates control and data channels; it does not resume interrupted SSH streams or replay commands. Capacity waits are bounded and do not terminate existing sessions. A caller forwards up to eight simultaneous connections; a bounded waiter can now wait up to 15 seconds within the existing 25-second establishment budget, leaving time for pairing and TLS. Saturation beyond that budget still fails explicitly; commands are never replayed. Transfer framing reuses per-stream buffers without changing the wire format, encryption or 32 KiB frame limit.
+v2 is the default. A compatible deployment may explicitly enable `protocol: "v3"` in the local profile. v3 separates control and data channels; it does not resume interrupted SSH streams or replay commands. Capacity waits are bounded and do not terminate existing sessions. A caller defaults to 32 simultaneous connections and 128 FIFO waiting requests. Each queued request expires after 15 seconds within the 25-second establishment budget. A v3 provider defaults to 64 reservations; idle channels grow from 2 to at most 16 with active demand and shrink after 10 seconds of inactivity. Older relays retain their advertised limit (4 when absent). Saturation beyond that budget still fails explicitly; commands are never replayed. Transfer framing reuses per-stream buffers without changing the wire format, encryption or 32 KiB frame limit.
 
 [Windows usage](README-WINDOWS.md) · [Agent operations](AGENT-SETUP.md) · [Security review](SECURITY-REVIEW.md) · [Privacy](PRIVACY.md)
 
@@ -61,3 +61,7 @@ See [Code signing policy](CODE-SIGNING.md). SignPath Foundation eligibility and 
 ## License
 
 Apache-2.0. Copyright 2026 HITL Connect contributors. Dependency licenses and notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and `licenses/`. This initial public source snapshot intentionally imports no private repository history.
+
+## Multiple agents and durable jobs
+
+See [capacity and jobs](docs/multi-agent.md) for limits, deployment order, command syntax and acceptance criteria. Capacity changes require upgrading the relay as well as both endpoints. No claim of thirty concurrent WAN sessions follows from compilation or local tests alone.

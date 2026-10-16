@@ -67,6 +67,7 @@ type Config struct {
 	Logging      *transportLogSettings `json:"logging,omitempty"`
 	Protocol     string                `json:"protocol,omitempty"`
 	IdleChannels int                   `json:"idleChannels,omitempty"`
+	Capacity     capacitySettings      `json:"capacity,omitempty"`
 }
 type Hello struct {
 	Role       string `json:"role"`
@@ -146,8 +147,11 @@ func load(path string) (*Config, error) {
 	if c.Protocol != "" && c.Protocol != "v2" && c.Protocol != "v3" {
 		return nil, errors.New("unsupported protocol")
 	}
-	if c.IdleChannels < 0 || c.IdleChannels > 4 {
-		return nil, errors.New("idleChannels must be 1-4 or omitted")
+	if c.IdleChannels < 0 || c.IdleChannels > 16 {
+		return nil, errors.New("idleChannels must be 1-16 or omitted")
+	}
+	if err = c.validateCapacity(); err != nil {
+		return nil, err
 	}
 	if c.Peers == nil {
 		c.Peers = map[string]Peer{}

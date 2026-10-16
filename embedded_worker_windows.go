@@ -15,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/windows"
 )
 
@@ -63,7 +62,7 @@ func embeddedAccountToken(a hostAuthorization) (windows.Token, error) {
 
 type workerRequest struct{ SID, Privilege, Operation, Command string }
 
-func runEmbeddedWorker(ctx context.Context, a hostAuthorization, operation, command string, ch ssh.Channel) (int, error) {
+func runEmbeddedWorker(ctx context.Context, a hostAuthorization, operation, command string, ch workerIO) (int, error) {
 	token, err := embeddedAccountToken(a)
 	if err != nil {
 		return 1, err

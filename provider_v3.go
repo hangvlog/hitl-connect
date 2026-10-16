@@ -34,8 +34,8 @@ func serveV3(ctx context.Context, c *Config) error {
 	}
 	var sessions sync.WaitGroup
 	defer sessions.Wait()
-	active := make(chan struct{}, 16)
-	dials := make(chan struct{}, 2)
+	active := make(chan struct{}, c.capacity().ProviderConnections)
+	dials := make(chan struct{}, 8)
 	backoff := time.Second
 	fmt.Printf("serving device=%s services=%d protocol=v3\n", c.ID, len(c.Services))
 	for ctx.Err() == nil {
@@ -89,9 +89,10 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 	}
 	kind, data, err := ws.Read(handshakeCtx)
 	var registered struct {
-		State       string `json:"state"`
-		Generation  string `json:"generation"`
-		HeartbeatMs int    `json:"heartbeatMs"`
+		State           string `json:"state"`
+		Generation      string `json:"generation"`
+		HeartbeatMs     int    `json:"heartbeatMs"`
+		MaxIdleChannels int    `json:"maxIdleChannels"`
 	}
 	if err != nil {
 		return pairingError(err)
@@ -116,11 +117,17 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 	var workers sync.WaitGroup
 	// Stop and join idle workers only; established sessions remain on ctx.
 	defer func() { stop(); ws.CloseNow(); workers.Wait() }()
-	for i := 0; i < pool; i++ {
+	maximum := registered.MaxIdleChannels
+	if maximum == 0 {
+		maximum = 4
+	} // Older relays retain their advertised wire contract.
+	maximum = min(maximum, c.capacity().MaxIdleChannels)
+	pool = min(pool, maximum)
+	for i := 0; i < maximum; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			providerSlot(generationCtx, ctx, c, registered.Generation, active, dials, sessions)
+			providerSlot(generationCtx, ctx, c, registered.Generation, active, dials, sessions, i, pool, maximum)
 		}()
 	}
 	replies := make(chan error, 1)
@@ -171,19 +178,46 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 	}
 }
 
-func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation string, active, dials chan struct{}, sessions *sync.WaitGroup) {
+func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation string, active, dials chan struct{}, sessions *sync.WaitGroup, index, base, maximum int) {
 	backoff := time.Second
 	for idleCtx.Err() == nil {
+		if index >= desiredIdle(base, maximum, c.runtime.activeCount()) {
+			select {
+			case <-idleCtx.Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+			continue
+		}
+		// Reserve provider capacity before pairing, so saturation queues at the
+		// relay instead of dropping a caller that already completed pairing.
+		select {
+		case active <- struct{}{}:
+		case <-idleCtx.Done():
+			return
+		}
 		// dialRelay releases this semaphore immediately after the WSS handshake,
 		// not after waiting for a caller to consume the idle slot.
 		select {
 		case dials <- struct{}{}:
 		case <-idleCtx.Done():
+			<-active
 			return
 		}
 		hello := Hello{Role: "accept", Generation: generation}
-		ws, paired, err := dialRelayWithReady(idleCtx, c, hello, func() { <-dials })
+		slotCtx := idleCtx
+		cancelSlot := func() {}
+		if index >= base {
+			slotCtx, cancelSlot = context.WithTimeout(idleCtx, 10*time.Second)
+		}
+		ws, paired, err := dialRelayWithReady(slotCtx, c, hello, func() { <-dials })
+		expired := slotCtx.Err() != nil
+		cancelSlot()
 		if err != nil {
+			<-active
+			if expired && idleCtx.Err() == nil {
+				continue
+			}
 			if idleCtx.Err() != nil {
 				return
 			}
@@ -197,22 +231,17 @@ func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation str
 			continue
 		}
 		backoff = time.Second
-		select {
-		case active <- struct{}{}:
-			if !c.runtime.begin() {
-				<-active
-				ws.CloseNow()
-				continue
-			}
-			sessions.Add(1)
-			go func() {
-				defer sessions.Done()
-				defer c.runtime.end()
-				defer func() { <-active }()
-				acceptSession(sessionCtx, c, ws, paired, c.Services[paired.Service])
-			}()
-		default:
-			ws.Close(websocket.StatusPolicyViolation, "TARGET_BUSY")
+		if !c.runtime.begin() {
+			<-active
+			ws.CloseNow()
+			continue
 		}
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			defer c.runtime.end()
+			defer func() { <-active }()
+			acceptSession(sessionCtx, c, ws, paired, c.Services[paired.Service])
+		}()
 	}
 }

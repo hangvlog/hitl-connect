@@ -288,7 +288,7 @@ func TestForwardWaitsForCapacityWithoutDroppingExistingConnections(t *testing.T)
 	}
 	address := listener.Addr().String()
 	listener.Close()
-	c := &Config{Relay: server.URL, Peers: map[string]Peer{"provider": {Services: []string{"ssh"}}}}
+	c := &Config{Relay: server.URL, Capacity: capacitySettings{CallerConnections: 8}, Peers: map[string]Peer{"provider": {Services: []string{"ssh"}}}}
 	done := make(chan error, 1)
 	go func() { done <- forward(ctx, c, "provider", "ssh", address) }()
 	defer func() { cancel(); <-done }()

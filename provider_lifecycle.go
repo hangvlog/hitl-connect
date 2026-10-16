@@ -34,6 +34,7 @@ func (r *providerRuntime) begin() bool {
 	r.notify()
 	return true
 }
+func (r *providerRuntime) activeCount() int { r.mu.Lock(); defer r.mu.Unlock(); return r.active }
 func (r *providerRuntime) end()             { r.mu.Lock(); defer r.mu.Unlock(); r.active--; r.notify() }
 func (r *providerRuntime) isDraining() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.draining }
 func (r *providerRuntime) drain(ctx context.Context) error {

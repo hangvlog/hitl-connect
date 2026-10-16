@@ -106,6 +106,15 @@ func serve(ctx context.Context, c *Config) error {
 		}
 		c.sshAccount = a.User
 	}
+	if c.Protocol == "v3" && c.runtime == nil {
+		c.runtime = newProviderRuntime()
+	}
+	if c.embedded != nil && c.embedded.jobs == nil {
+		c.embedded.jobs = newJobManager(ctx, filepath.Join(c.embedded.policy.Profile, "jobs"), c.runtime,
+			func(jobCtx context.Context, command string, streams workerIO) (int, error) {
+				return runEmbeddedWorker(jobCtx, c.embedded.policy, "exec", command, streams)
+			})
+	}
 	if len(c.Services) == 0 {
 		return errors.New("no local services configured")
 	}
@@ -113,7 +122,7 @@ func serve(ctx context.Context, c *Config) error {
 		return serveV3(ctx, c)
 	}
 	var workers sync.WaitGroup
-	slots := make(chan struct{}, 16)
+	slots := make(chan struct{}, c.capacity().ProviderConnections)
 	for name, service := range c.Services {
 		workers.Add(1)
 		go func() {
@@ -168,9 +177,33 @@ func forward(ctx context.Context, c *Config, peerID, service, bind string) error
 	defer listener.Close()
 	go func() { <-ctx.Done(); listener.Close() }()
 	fmt.Printf("listening=%s peer=%s service=%s\nLocal listener ready; remote service and SSH login are verified when a connection is made.\n", listener.Addr(), peerID, service)
+	limits := c.capacity()
+	type pending struct {
+		conn     net.Conn
+		accepted time.Time
+		timer    *time.Timer
+	}
+	queue := make(chan pending, limits.CallerQueue)
 	var workers sync.WaitGroup
 	defer workers.Wait()
-	slots := make(chan struct{}, 8)
+	defer close(queue)
+	for i := 0; i < limits.CallerConnections; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for request := range queue {
+				request.timer.Stop()
+				if ctx.Err() != nil || time.Since(request.accepted) >= 15*time.Second {
+					request.conn.Close()
+					reportLifecycle(c, newTransportTrace(), "dial", "rejected", "admission", errLocalCapacity, time.Since(request.accepted), nil)
+					continue
+				}
+				dialCtx, cancel := context.WithDeadline(ctx, request.accepted.Add(25*time.Second))
+				forwardConnection(ctx, dialCtx, c, peerID, service, request.conn)
+				cancel()
+			}
+		}()
+	}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -179,63 +212,47 @@ func forward(ctx context.Context, c *Config, peerID, service, bind string) error
 			}
 			return err
 		}
-		// Admission is part of the existing 25-second establishment budget.
-		// Keep one bounded waiter here instead of dropping the ninth connection
-		// or spawning unbounded goroutines under load. Wait at most 15 seconds,
-		// retaining 10 seconds of the setup budget for pairing, TLS and readiness.
-		dialCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		timer := time.AfterFunc(15*time.Second, func() { _ = conn.Close() })
 		select {
-		case slots <- struct{}{}:
+		case queue <- pending{conn, time.Now(), timer}:
 		default:
-			started, trace := time.Now(), newTransportTrace()
-			reportLifecycle(c, trace, "dial", "waiting", "admission", nil, 0, map[string]any{"activeLimit": cap(slots)})
-			waitCtx, stopWait := context.WithTimeout(dialCtx, 15*time.Second)
-			err := waitForwardSlot(waitCtx, slots)
-			stopWait()
-			if err != nil {
-				reportLifecycle(c, trace, "dial", "rejected", "admission", err, time.Since(started), map[string]any{"activeLimit": cap(slots)})
-				fmt.Fprintln(os.Stderr, "local-capacity-timeout: active connections retained; new connection was not forwarded")
-				cancel()
-				conn.Close()
-				continue
-			}
+			timer.Stop()
+			conn.Close()
+			reportLifecycle(c, newTransportTrace(), "dial", "rejected", "admission", errLocalCapacity, 0, map[string]any{"queueLimit": limits.CallerQueue})
 		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			defer func() { <-slots }()
-			defer conn.Close()
-			ws, paired, err := connect(dialCtx, c, Hello{Role: "dial", Target: peerID, Service: service})
-			cancel()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "tunnel connection failed: %v\n", err)
-				return
-			}
-			defer ws.CloseNow()
-			metrics := &sessionMetrics{}
-			finish := sessionReporter(c, paired, "dial")
-			stage := "tls"
-			var result error
-			defer func() { finish(stage, result, metrics) }()
-			encrypted, err := secure(ctx, c, ws, paired, false)
-			if err != nil {
-				result = err
-				fmt.Fprintln(os.Stderr, err)
-				return
-			}
-			defer encrypted.Close()
-			stage = "service-ready"
-			if result = serviceReady(encrypted, paired, false, true); result != nil {
-				return
-			}
-			if c.runtime != nil {
-				c.runtime.ready()
-			}
-			fmt.Println("tunnel-ready")
-			stage = "stream"
-			result = pipeMeasured(ctx, conn.(*net.TCPConn), encrypted, metrics)
-		}()
 	}
+}
+
+func forwardConnection(ctx, dialCtx context.Context, c *Config, peerID, service string, conn net.Conn) {
+	defer conn.Close()
+	ws, paired, err := connect(dialCtx, c, Hello{Role: "dial", Target: peerID, Service: service})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tunnel connection failed: %v\n", err)
+		return
+	}
+	defer ws.CloseNow()
+	metrics := &sessionMetrics{}
+	finish := sessionReporter(c, paired, "dial")
+	stage := "tls"
+	var result error
+	defer func() { finish(stage, result, metrics) }()
+	encrypted, err := secure(ctx, c, ws, paired, false)
+	if err != nil {
+		result = err
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	defer encrypted.Close()
+	stage = "service-ready"
+	if result = serviceReady(encrypted, paired, false, true); result != nil {
+		return
+	}
+	if c.runtime != nil {
+		c.runtime.ready()
+	}
+	fmt.Println("tunnel-ready")
+	stage = "stream"
+	result = pipeMeasured(ctx, conn.(*net.TCPConn), encrypted, metrics)
 }
 
 var errLocalCapacity = errors.New("LOCAL_CAPACITY_TIMEOUT")
