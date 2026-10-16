@@ -364,7 +364,7 @@ func installWindowsHost(ctx context.Context, base, account, address, sid string,
 	}
 	manifest, _ := json.Marshal(map[string]string{"version": guiVersion, "binarySha256": digest, "sourceProfile": base, "installedExecutable": installed, "service": name})
 	// CreateService supplies this type implicitly; UpdateConfig does not.
-	config := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, DisplayName: "HITL Connect", Description: "HITL Connect embedded SSH; explicitly authorized account sessions and local audit.", StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem"}
+	config := managedServiceConfig()
 	*stage = "register-service"
 	if service == nil {
 		service, e = manager.CreateService(name, installed, config, "host-service", "--dir", root, "--service-name", name)
@@ -383,10 +383,10 @@ func installWindowsHost(ctx context.Context, base, account, address, sid string,
 		}
 	}
 	*stage = "configure-recovery"
-	if e = service.SetRecoveryActions([]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: 5 * time.Second}, {Type: mgr.ServiceRestart, Delay: 15 * time.Second}}, 86400); e != nil {
+	if e = service.SetRecoveryActions(managedRecoveryActions(), 86400); e != nil {
 		return e
 	}
-	if e = service.SetRecoveryActionsOnNonCrashFailures(true); e != nil {
+	if e = service.SetRecoveryActionsOnNonCrashFailures(false); e != nil {
 		return e
 	}
 	*stage = "start-service"

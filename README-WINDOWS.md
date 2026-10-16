@@ -9,6 +9,8 @@ Use a 64-bit Windows build. Test artifacts are unsigned; review their source and
 
 The default embedded SSH mode requires the account to remain logged in; locking the screen is supported, logging out is a different state. It does not install system OpenSSH or change PowerShell execution policy.
 
+New or upgraded embedded services use delayed automatic startup. Unexpected process crashes receive at most two restart attempts (after 10 and 30 seconds), then remain stopped; reported startup/configuration failures do not trigger recovery. Recovery never restarts Windows or runs a replacement command. Missing or quarantined program files require an operator to resolve the cause; this policy does not override endpoint protection or prove that unrelated kernel/driver failures are fixed.
+
 Stop preserves configuration. Disable/renew code revokes access under that code; renewal may terminate those active sessions. Closing the browser does not stop the service. Use the controls intentionally.
 
 Keep profiles, private keys, connection codes, local settings and audit records private. Back them up before upgrades. Never erase an identity to fix a temporary network error.
