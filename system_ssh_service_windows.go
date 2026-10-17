@@ -332,7 +332,7 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 			return err
 		}
 	}
-	config := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, DisplayName: "HITL Connect", Description: "HITL Connect relay for the authorized Windows SSH account", StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem", DelayedAutoStart: true}
+	config := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, DisplayName: "HITL Connect", Description: "HITL Connect relay for the authorized Windows SSH account", StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem", DelayedAutoStart: true, ErrorControl: mgr.ErrorNormal}
 	if existing == nil {
 		existing, err = manager.CreateService(systemSSHRelayService, exe, config, "system-ssh-service", "--dir", base, "--owner-sid", sid)
 		if err != nil {
@@ -347,7 +347,7 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 	if err = existing.SetRecoveryActions(systemSSHRecoveryActions(), 86400); err != nil {
 		return err
 	}
-	if err = existing.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+	if err = existing.SetRecoveryActionsOnNonCrashFailures(false); err != nil {
 		return err
 	}
 	if err = existing.Start(); err != nil {
