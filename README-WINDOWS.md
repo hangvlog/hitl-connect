@@ -13,6 +13,8 @@ New or upgraded embedded services use delayed automatic startup. Unexpected proc
 
 The optional system SSH relay uses the same bounded crash policy. Its SYSTEM service resolves the protected profile from the SCM-configured base and owner SID, then verifies the protected account authorization. It does not depend on a desktop locator under the user's AppData at boot. Interactive migration still requires a valid existing locator; this change grants no new account or endpoint access.
 
+The relay's Windows service name is `HITLConnect-Relay`; the server service is `hitlconnect-server`. Upgrades validate the previous relay's protected installation, account and profile, drain sessions, and retain its disabled registration for rollback until the replacement is ready. An ambiguous pair of old/new registrations is rejected for operator review. Product service names do not change OpenSSH provenance, Microsoft signatures or audit records.
+
 Native SCM recovery acceptance is opt-in: in an elevated Windows PowerShell session, set `$env:HITL_SCM_INTEGRATION='1'` and run `go test . -run TestManagedRecoverySCM -count=1 -v -timeout=150s`. It creates one temporary demand-start test service, observes the initial start and two crash restarts, waits beyond the last restart delay, checks missing-executable failure, and removes its service registration. It does not restart Windows or exercise boot-time startup. Ordinary tests skip this integration case.
 
 Stop preserves configuration. Disable/renew code revokes access under that code; renewal may terminate those active sessions. Closing the browser does not stop the service. Use the controls intentionally.
