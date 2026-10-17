@@ -61,25 +61,21 @@ func prepareSystemSSHOwner(ctx context.Context, base string, stage *string, owne
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		return "", policy, errors.New("ELEVATION_REQUIRED")
 	}
-	*stage = "read-existing-authorization"
-	root, err := managedProfile(base)
-	if err != nil || root == "" {
-		return "", policy, errors.New("EXISTING_MANAGED_PROFILE_REQUIRED")
-	}
 	sid, err := currentOwnerSID()
 	if err != nil {
-		return root, policy, err
+		return "", policy, err
 	}
+	*stage = "read-existing-authorization"
+	isService := false
 	if ownerSID != "" {
-		isService, e := svc.IsWindowsService()
-		if e != nil || !isService || sid != "S-1-5-18" {
-			return root, policy, errors.New("SERVICE_MANAGER_REQUIRED")
+		isService, err = svc.IsWindowsService()
+		if err != nil {
+			return "", policy, err
 		}
-		sid = ownerSID
 	}
-	expected, _, err := managedLocation(base, sid)
-	if err != nil || !strings.EqualFold(canonicalProfile(root), canonicalProfile(expected)) {
-		return root, policy, errors.New("MANAGED_PROFILE_INVALID")
+	root, sid, err := systemSSHProfile(base, sid, ownerSID, isService)
+	if err != nil {
+		return root, policy, err
 	}
 	profile := filepath.Join(root, "public-host")
 	policy, err = readHostAuthorization(profile)
@@ -233,6 +229,34 @@ func prepareSystemSSHOwner(ctx context.Context, base string, stage *string, owne
 	}
 	*stage = "system-ssh-ready"
 	return root, policy, nil
+}
+
+func systemSSHProfile(base, callerSID, ownerSID string, isService bool) (string, string, error) {
+	sid := callerSID
+	if ownerSID != "" {
+		if !isService || callerSID != "S-1-5-18" {
+			return "", "", errors.New("SERVICE_MANAGER_REQUIRED")
+		}
+		sid = ownerSID
+	}
+	expected, _, err := managedLocation(base, sid)
+	if err != nil {
+		return "", sid, err
+	}
+	if ownerSID != "" {
+		// SCM fixes the owner and base. Boot must not depend on a user's AppData
+		// locator (which can be missing or redirected). The caller still reads
+		// the protected authorization and verifies its SID before using this root.
+		return expected, sid, nil
+	}
+	root, err := managedProfile(base)
+	if err != nil || root == "" {
+		return "", sid, errors.New("EXISTING_MANAGED_PROFILE_REQUIRED")
+	}
+	if !strings.EqualFold(canonicalProfile(root), canonicalProfile(expected)) {
+		return root, sid, errors.New("MANAGED_PROFILE_INVALID")
+	}
+	return root, sid, nil
 }
 
 func installSystemSSHKey(profile string, candidate sshAccess, account string) agentResult {
