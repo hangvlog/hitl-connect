@@ -16,7 +16,8 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-const systemSSHRelayService = "HITLConnect-SystemSSH"
+const systemSSHRelayService = "HITLConnect-Relay"
+const legacySystemSSHRelayService = "HITLConnect-SystemSSH"
 
 func systemSSHRecoveryActions() []mgr.RecoveryAction {
 	// SCM repeats the last action for every later failure. End explicitly in
@@ -136,27 +137,26 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 		return err
 	}
 	defer manager.Disconnect()
-	existing, err := manager.OpenService(systemSSHRelayService)
-	if err != nil && !errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+	existing, err := openSystemSSHRelay(manager)
+	if err != nil {
 		return err
 	}
-	if existing != nil {
-		defer existing.Close()
-	} else {
-		defer func() {
-			if existing != nil {
-				existing.Close()
-			}
-		}()
-	}
+	var legacy *mgr.Service
+	defer func() {
+		if existing != nil {
+			existing.Close()
+		}
+		if legacy != nil {
+			legacy.Close()
+		}
+	}()
 	var previous *mgr.Config
 	if existing != nil {
 		cfg, e := existing.Config()
 		if e != nil {
 			return e
 		}
-		argv, e := windows.DecomposeCommandLine(cfg.BinaryPathName)
-		if e != nil || len(argv) != 6 || argv[1] != "system-ssh-service" || argv[2] != "--dir" || !strings.EqualFold(argv[3], base) || argv[4] != "--owner-sid" || argv[5] != sid {
+		if !systemSSHRelayScope(cfg, base, sid, allowed) {
 			return errors.New("EXISTING_SYSTEM_SSH_SERVICE_CONFLICT")
 		}
 		previous = &cfg
@@ -260,10 +260,23 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 					result = errors.Join(result, fmt.Errorf("ROLLBACK_RELAY_STOP_FAILED: %w", e))
 					return
 				}
-				if previous != nil {
-					if e := existing.UpdateConfig(*previous); e != nil {
+				if legacy != nil || previous == nil {
+					if e := existing.Delete(); e != nil {
 						result = errors.Join(result, e)
+						return
 					}
+					existing.Close()
+					existing = nil
+				}
+			}
+			restore := existing
+			if legacy != nil {
+				restore = legacy
+			}
+			if restore != nil && previous != nil {
+				if e := restore.UpdateConfig(*previous); e != nil {
+					result = errors.Join(result, e)
+					return
 				}
 			}
 			if renamed != nil {
@@ -288,8 +301,8 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 			if e := nativeStartSSH(recovery, sshService, false); e != nil {
 				result = errors.Join(result, e)
 			}
-			if existing != nil && previous != nil {
-				if e := existing.Start(); e != nil {
+			if restore != nil && previous != nil && serviceActive && !managedProtectionBlocked(result) {
+				if e := restore.Start(); e != nil {
 					result = errors.Join(result, e)
 				}
 			}
@@ -333,6 +346,15 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 		}
 	}
 	config := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, DisplayName: "HITL Connect", Description: "HITL Connect relay for the authorized Windows SSH account", StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem", DelayedAutoStart: true, ErrorControl: mgr.ErrorNormal}
+	if existing != nil && existing.Name == legacySystemSSHRelayService {
+		legacy, existing = existing, nil
+		disabled := *previous
+		disabled.StartType = mgr.StartDisabled
+		disabled.DisplayName = "HITL Connect previous relay " + filepath.Base(backup)
+		if err = legacy.UpdateConfig(disabled); err != nil {
+			return err
+		}
+	}
 	if existing == nil {
 		existing, err = manager.CreateService(systemSSHRelayService, exe, config, "system-ssh-service", "--dir", base, "--owner-sid", sid)
 		if err != nil {
@@ -358,20 +380,8 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 	if err = nativeServiceState(readyCtx, existing, svc.Running); err != nil {
 		return err
 	}
-	for {
-		d, e := agentSession(root)
-		var state guiState
-		if e == nil {
-			e = agentCall(readyCtx, d, "state", nil, &state)
-		}
-		if e == nil && state.Version == guiVersion && state.Managed && (!plan.Resume || state.Running) {
-			break
-		}
-		select {
-		case <-readyCtx.Done():
-			return errors.New("SYSTEM_SSH_SERVICE_NOT_READY")
-		case <-time.After(100 * time.Millisecond):
-		}
+	if err = waitSystemSSHRelay(readyCtx, root, plan.Resume); err != nil {
+		return err
 	}
 	if renamed != nil {
 		// SCM has no rename operation; remove the old definition only after the
@@ -381,5 +391,11 @@ func installSystemSSHService(ctx context.Context, base string, interrupt bool) (
 		}
 	}
 	committed = true
+	if legacy != nil {
+		// Cleanup failure leaves the old registration disabled and the new one running.
+		if err = legacy.Delete(); err != nil {
+			return fmt.Errorf("LEGACY_RELAY_CLEANUP_FAILED: %w", err)
+		}
+	}
 	return nil
 }
