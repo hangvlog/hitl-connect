@@ -22,6 +22,7 @@
 <div id="login-fields" class="login" hidden><p class="hint">粘贴连接码后，自动配置并验证登录。私钥留在本机，无需传文件或再次批准。</p><details><summary>使用已有连接配置（高级）</summary><label><input type="checkbox" id="manual-ssh">保留手动账号与主机指纹流程</label><label for="user">远端账号</label><input id="user" placeholder="例如 alice 或 DESKTOP\alice" autocomplete="off"><label for="keypath">已有私钥的完整路径（可选）</label><input id="keypath" placeholder="留空自动创建本设备专用密钥" spellcheck="false"><p class="hint">私钥始终留在本机，不会上传。</p></details></div>
 <div id="identity" class="success" hidden></div><p id="checked" class="timestamp"></p>
 </section></div>
+<section class="panel" id="http-panel"><h2>发布本地 HTTP 服务</h2><p class="hint">将指定本机端口发布为公网 API；调用需要独立 Token。支持 HTTP 与 SSE，程序和客户端需要保持运行。</p><label for="http-port">本地端口</label><input id="http-port" type="number" min="1" max="65535" placeholder="8000"><label for="http-name">服务标识（可选，默认端口号）</label><input id="http-name" placeholder="例如 model-api"><button id="http-publish">发布服务</button><button id="http-refresh">刷新列表</button><div id="http-list"></div></section>
 <section class="panel log"><div class="section-head"><h2>诊断记录</h2><button id="copy-report">复制脱敏诊断</button></div><p class="hint">不包含连接码、令牌、私钥、文件路径或登录账号。</p><ol id="events"><li>等待启动。</li></ol></section>
 <footer><span>仅在本机开放此面板。关闭页面不会停止连接；双击程序可重新打开。<br><span id="product-version">HITL Connect</span></span><button id="quit">退出程序</button></footer>
 </main></body></html>

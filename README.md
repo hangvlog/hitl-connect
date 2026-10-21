@@ -65,3 +65,35 @@ Apache-2.0. Copyright 2026 HITL Connect contributors. Dependency licenses and no
 ## Multiple agents and durable jobs
 
 See [capacity and jobs](docs/multi-agent.md) for limits, deployment order, command syntax and acceptance criteria. Capacity changes require upgrading the relay as well as both endpoints. No claim of thirty concurrent WAN sessions follows from compilation or local tests alone.
+
+## Publish a local HTTP API
+
+An existing provider can publish explicit loopback HTTP services from the local panel's
+“发布本地 HTTP 服务” section. Enter a port and an optional stable service name. The
+panel returns the public URL and can copy private caller credentials. This does not
+restart SSH sessions; the background panel owns a separate reconnecting HTTP connection.
+Disabling a service stops new calls and closes its active HTTP requests. Stopping SSH
+alone does not disable HTTP publications; disable them separately or quit the provider.
+
+CLI equivalent (existing provider identity required):
+
+```sh
+hitl-connect-cli http publish --config /private/provider/config.json --port 8000 --name model-api --output /private/model-api-credentials.json
+hitl-connect-cli http run --config /private/provider/config.json
+hitl-connect-cli http list --config /private/provider/config.json
+hitl-connect-cli http disable --config /private/provider/config.json --name model-api
+```
+
+The GUI/background provider starts HTTP publications automatically; `http run` is for
+CLI-only providers. Output credentials must be a new file outside the identity directory.
+Only the credential file contains the token; ordinary command output and service lists
+omit it. The name defaults to the decimal port. Changing a target port under the same
+name preserves the URL and token. Profiles and `http-services.private.json` are private.
+
+A compatible relay serves `/services/{deviceId}/{service}/{originalPath}` relative to its
+API root (for example `/hitl/services/...` with that deployment prefix). Callers send
+`X-Hitl-Service-Token`; business `Authorization` remains separate. The independent token
+is scoped to one device/service and never grants SSH access. HTTP/SSE, binary payloads
+and cancellation are supported; browser WebSocket, CONNECT, cookies and arbitrary web
+hosting are not. The HTTPS gateway terminates HTTP payload encryption; this does not
+change the end-to-end TLS of the existing SSH/TCP transport. No request is replayed.

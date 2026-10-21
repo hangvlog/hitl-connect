@@ -63,3 +63,15 @@ $('copy-key').onclick=async()=>{try{const data=await api('invitation',{});await 
 $('copy-report').onclick=async()=>{try{if(!state)return;await copy(JSON.stringify({product:'HITL Connect',version:state.version,role:state.role,running:state.running,checkedAt:state.checkedAt,problem:state.problem?{...state.problem,code:displayCode(state.problem.code),message:displayText(state.problem.message),nextAction:displayText(state.problem.nextAction)}:null,service:state.service,loginExitCode:state.nativeSshExitCode,steps:state.steps.map(s=>({...s,title:displayText(s.title),detail:displayText(s.detail)})),events:state.events.map(displayText)},null,2));notice('脱敏诊断已复制。');}catch(e){notice(e.message);}};
 $('quit').onclick=async()=>{const result=await action('quit',{});if(result){exited=true;notice('程序已退出，可以关闭此页面。');for(const button of document.querySelectorAll('button'))button.disabled=true;}};
 if(!token){notice('请双击 HITL Connect 程序打开管理面板。');for(const button of document.querySelectorAll('button'))button.disabled=true;}else{refresh();setInterval(()=>{if(!document.hidden)refresh();},3000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});}
+
+async function renderHTTP(){
+ try{const data=await api('http-services',{});$('http-list').replaceChildren();
+ for(const service of data.items){const row=document.createElement('div'),label=document.createElement('p'),url=document.createElement('code'),copy=document.createElement('button'),disable=document.createElement('button');
+ label.textContent=service.name+' → '+service.target+' · '+(!service.enabled?'已停用':data.connected?'已连接，等待调用':'等待连接');url.textContent=service.url;copy.textContent='复制调用配置';disable.textContent='停用';disable.disabled=!service.enabled;
+ copy.onclick=async()=>{try{const result=await api('http-credentials',{serviceName:service.name});await navigator.clipboard.writeText(JSON.stringify(result,null,2));notice('调用配置已复制，请私密保存 Token');}catch(e){notice(e.message)}};
+ disable.onclick=async()=>{try{await api('http-disable',{serviceName:service.name});await renderHTTP();}catch(e){notice(e.message)}};
+ row.append(label,url,copy,disable);$('http-list').append(row);}
+ }catch(e){notice(e.message)}
+}
+$('http-refresh').onclick=renderHTTP;
+$('http-publish').onclick=async()=>{try{await api('http-publish',{httpPort:Number($('http-port').value),serviceName:$('http-name').value.trim()});await renderHTTP();notice('发布配置已保存；客户端连接服务器后生效，请通过接口验证可用性。');}catch(e){notice(e.message)}};

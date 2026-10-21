@@ -384,6 +384,9 @@ func initialize(id, dir, relay string) error {
 	return nil
 }
 func run(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "http" {
+		return httpCommand(ctx, args[1:])
+	}
 	if len(args) > 0 && (args[0] == "install-system-ssh" || args[0] == "system-ssh-service") {
 		return runSystemSSHServiceCommand(ctx, args)
 	}

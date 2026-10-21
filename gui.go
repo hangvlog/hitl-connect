@@ -76,6 +76,8 @@ type guiState struct {
 	AccessRequest      string                `json:"accessRequest,omitempty"`
 }
 type guiRequest struct {
+	ServiceName   string `json:"serviceName,omitempty"`
+	HTTPPort      int    `json:"httpPort,omitempty"`
 	Relay         string `json:"relay,omitempty"`
 	Privilege     string `json:"privilege,omitempty"`
 	Role          string `json:"role"`
@@ -249,6 +251,9 @@ func (g *guiSession) handler() http.Handler {
 		}
 		var err error
 		switch r.URL.Path {
+		case "/api/http-services", "/api/http-publish", "/api/http-disable", "/api/http-credentials":
+			g.httpAction(w, r, request)
+			return
 		case "/api/disable-code":
 			err = g.disableGrant()
 		case "/api/renew":
@@ -376,6 +381,22 @@ func runGUI(ctx context.Context, base, bind string, noOpen bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.shutdown = cancel
+	if servicePolicy != nil || func() bool { p, _ := managedProfile(base); return p == "" }() {
+		go func() {
+			config := filepath.Join(base, "public-host", "config.json")
+			for ctx.Err() == nil {
+				if _, err := load(config); err == nil {
+					_ = runHTTPPublications(ctx, config)
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
 	if err = privateJSON(descriptor, guiDescriptor{g.origin, g.token}); err != nil {
 		listener.Close()
 		return err

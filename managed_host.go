@@ -139,6 +139,11 @@ func validateManagedAction(policy *hostAuthorization, action string, r guiReques
 		return nil
 	}
 	switch action {
+	case "http-services", "http-publish", "http-disable", "http-credentials":
+		if r.Role != "" || r.Target != "" || r.User != "" || r.Privilege != "" || r.ConnectionKey != "" || r.KeyPath != "" || r.Listen != "" {
+			return errors.New("HTTP_PUBLICATION_SCOPE_INVALID")
+		}
+		return nil
 	case "start", "allow", "diagnose", "drain", "stop", "quit", "renew", "disable-code", "invitation":
 	default:
 		return errors.New("MANAGED_ACTION_NOT_ALLOWED")
