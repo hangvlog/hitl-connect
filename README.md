@@ -110,3 +110,7 @@ is scoped to one device/service and never grants SSH access. HTTP/SSE, binary pa
 and cancellation are supported; browser WebSocket, CONNECT, cookies and arbitrary web
 hosting are not. The HTTPS gateway terminates HTTP payload encryption; this does not
 change the end-to-end TLS of the existing SSH/TCP transport. No request is replayed.
+
+### Device address reporting
+
+Authenticated relay connections report up to 16 active unicast interface IPv4/IPv6 addresses in `X-Connect-Local-Ips`. Loopback, link-local and multicast addresses are excluded. No MAC address, interface name, DNS settings or network scan is collected. Relays may show these self-reported addresses in the account-protected device directory. This metadata is informational and is never an authentication factor. Older relays ignore the optional header.

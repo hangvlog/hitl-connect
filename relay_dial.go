@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,7 @@ func openRelay(ctx context.Context, c *Config, endpoint string) (*websocket.Conn
 		},
 	}
 	ws, response, err := websocket.Dial(httptrace.WithClientTrace(ctx, trace), endpoint, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}, CompressionMode: websocket.CompressionDisabled,
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}, "X-Connect-Local-Ips": {strings.Join(localAddresses(), ",")}}, CompressionMode: websocket.CompressionDisabled,
 	})
 	if err == nil {
 		return ws, nil
