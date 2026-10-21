@@ -89,6 +89,19 @@ CLI-only providers. Output credentials must be a new file outside the identity d
 Only the credential file contains the token; ordinary command output and service lists
 omit it. The name defaults to the decimal port. Changing a target port under the same
 name preserves the URL and token. Profiles and `http-services.private.json` are private.
+The signed publication includes the actual local port so a compatible management
+catalog can display named services without guessing their targets.
+
+For an account-enabled control plane, request a one-time device claim challenge while
+logged in, save it as JSON on the provider, then produce the ownership proof:
+
+```sh
+hitl-connect-cli http claim-proof --config /private/provider/config.json --challenge challenge.json --output proof.json
+```
+
+Submit that proof to the control plane while logged into the same account. It signs the
+device ID, account ID and expiring nonce using the existing provider key; the key stays
+on the device. The output must be a new file outside the identity directory.
 
 A compatible relay serves `/services/{deviceId}/{service}/{originalPath}` relative to its
 API root (for example `/hitl/services/...` with that deployment prefix). Callers send

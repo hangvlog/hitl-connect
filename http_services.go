@@ -226,8 +226,8 @@ func serveHTTPPublications(ctx context.Context, c *Config, p httpPublications) e
 		return err
 	}
 	sort.Slice(p.Services, func(i, j int) bool { return p.Services[i].Name < p.Services[j].Name })
-	services := []map[string]string{}
-	pairs := [][2]string{}
+	services := []map[string]any{}
+	pairs := [][]any{}
 	targets := map[string]string{}
 	for _, s := range p.Services {
 		if !s.Enabled {
@@ -235,12 +235,14 @@ func serveHTTPPublications(ctx context.Context, c *Config, p httpPublications) e
 		}
 		hash := sha256.Sum256([]byte(s.Token))
 		digest := hex.EncodeToString(hash[:])
-		services = append(services, map[string]string{"name": s.Name, "tokenSha256": digest})
-		pairs = append(pairs, [2]string{s.Name, digest})
+		_, portText, _ := net.SplitHostPort(s.Target)
+		port, _ := strconv.Atoi(portText)
+		services = append(services, map[string]any{"name": s.Name, "tokenSha256": digest, "localPort": port})
+		pairs = append(pairs, []any{s.Name, digest, port})
 		targets[s.Name] = s.Target
 	}
 	version := time.Now().UnixMilli()
-	message, _ := json.Marshal([]any{"hitl-http-publish-v1", c.ID, version, pairs})
+	message, _ := json.Marshal([]any{"hitl-http-publish-v2", c.ID, version, pairs})
 	digest := sha256.Sum256(message)
 	signature, err := local.PrivateKey.(crypto.Signer).Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
@@ -251,7 +253,7 @@ func serveHTTPPublications(ctx context.Context, c *Config, p httpPublications) e
 		return err
 	}
 	defer ws.CloseNow()
-	hello, _ := json.Marshal(map[string]any{"role": "http-control", "certificate": string(cert), "signature": base64.StdEncoding.EncodeToString(signature), "publication": map[string]any{"version": version, "services": services}})
+	hello, _ := json.Marshal(map[string]any{"role": "http-control", "certificate": string(cert), "signature": base64.StdEncoding.EncodeToString(signature), "publication": map[string]any{"format": 2, "version": version, "services": services}})
 	if err = ws.Write(ctx, websocket.MessageText, hello); err != nil {
 		return err
 	}
@@ -397,6 +399,7 @@ func httpCommand(ctx context.Context, args []string) error {
 	port := f.Int("port", 0, "loopback HTTP port")
 	name := f.String("name", "", "service name (default port)")
 	output := f.String("output", "", "private API credentials file")
+	challenge := f.String("challenge", "", "Chat All account claim challenge JSON")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -409,6 +412,9 @@ func httpCommand(ctx context.Context, args []string) error {
 	}
 	if action == "run" {
 		return runHTTPPublications(ctx, *config)
+	}
+	if action == "claim-proof" {
+		return httpClaimProof(c, *challenge, *output)
 	}
 	if action == "publish" {
 		if *port < 1 || *port > 65535 || *output == "" {
