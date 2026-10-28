@@ -99,7 +99,7 @@ func (b *reconnectBudget) failure() error {
 }
 
 func (b *reconnectBudget) result(err error, parent context.Context) error {
-	if err == nil || parent.Err() != nil {
+	if err == nil || errors.Is(parent.Err(), context.Canceled) {
 		return err
 	}
 	if stopped := b.failure(); stopped != nil {

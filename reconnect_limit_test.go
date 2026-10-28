@@ -182,6 +182,12 @@ func TestReconnectLimitCancellationAndStateReadFailure(t *testing.T) {
 	if !b.state.FirstFailure.IsZero() {
 		t.Fatal("manual cancellation started outage clock")
 	}
+	deadline, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	_ = b.result(context.DeadlineExceeded, deadline)
+	if b.state.FirstFailure.IsZero() {
+		t.Fatal("connection timeout did not start outage clock")
+	}
 	if err := b.wait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
