@@ -36,6 +36,7 @@ func serveV3(ctx context.Context, c *Config) error {
 	active := make(chan struct{}, c.capacity().ProviderConnections)
 	dials := make(chan struct{}, 8)
 	backoff := reconnectBackoff{}
+	budget := budgetFor(c, "ssh")
 	fmt.Printf("serving device=%s services=%d protocol=v3\n", c.ID, len(c.Services))
 	for ctx.Err() == nil {
 		started := time.Now()
@@ -44,12 +45,18 @@ func serveV3(ctx context.Context, c *Config) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if stopped := budget.failure(); stopped != nil {
+			return stopped
+		}
 		reportLifecycle(c, instance, "control", "closed", "control", err, time.Since(started), nil)
 		if !online.IsZero() && time.Since(online) >= reconnectStable {
 			backoff = reconnectBackoff{}
 		}
-		if waitReconnect(ctx, backoff.next()) != nil {
-			return nil
+		if err := budget.wait(ctx, backoff.next()); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
 		}
 	}
 	return nil
@@ -77,7 +84,12 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 	}
 	defer ws.CloseNow()
 	ws.SetReadLimit(1024)
-	handshakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	handshakeCtx, cancelBudget, budgetErr := budgetFor(c, "ssh").attempt(ctx)
+	if budgetErr != nil {
+		return budgetErr
+	}
+	defer cancelBudget()
+	handshakeCtx, cancel := context.WithTimeout(handshakeCtx, 10*time.Second)
 	defer cancel()
 	payload, _ := json.Marshal(Hello{Role: "control", InstanceID: instance})
 	if err = ws.Write(handshakeCtx, websocket.MessageText, payload); err != nil {
@@ -101,6 +113,8 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 		heartbeatInterval = 20 * time.Second
 	}
 	c.runtime.control(true)
+	stopHealthy := budgetFor(c, "ssh").online()
+	defer stopHealthy()
 	ready()
 	defer c.runtime.control(false)
 	reportLifecycle(c, instance, "control", "online", "control", nil, 0, nil)
@@ -219,7 +233,7 @@ func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation str
 				return
 			}
 			reportLifecycle(c, newTransportTrace(), "accept", "failed", "pool", err, 0, nil)
-			if waitReconnect(idleCtx, backoff.next()) != nil {
+			if budgetFor(c, "ssh").wait(idleCtx, backoff.next()) != nil {
 				return
 			}
 			continue

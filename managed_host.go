@@ -139,7 +139,7 @@ func validateManagedAction(policy *hostAuthorization, action string, r guiReques
 		return nil
 	}
 	switch action {
-	case "http-services", "http-publish", "http-disable", "http-credentials":
+	case "http-services", "http-publish", "http-disable", "http-credentials", "http-resume":
 		if r.Role != "" || r.Target != "" || r.User != "" || r.Privilege != "" || r.ConnectionKey != "" || r.KeyPath != "" || r.Listen != "" {
 			return errors.New("HTTP_PUBLICATION_SCOPE_INVALID")
 		}

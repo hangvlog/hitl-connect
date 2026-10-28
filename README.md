@@ -88,6 +88,17 @@ does. Cancellation ends waiting promptly, and no application request is replayed
 HTTP reconnect logs include the next delay. Fully disabled publication records
 remain synchronized with the relay, using the same outage backoff.
 
+Automatic reconnect stops after **two hours from the first failure**, including
+cooldown and enrollment time. No new network attempt is admitted at or after the
+deadline. SSH and HTTP have separate clocks; an acknowledged connection must
+remain online for 60 seconds to clear its outage. A successful HTTP/WebSocket
+handshake alone does not reset the clock. Private `reconnect-ssh.json` and
+`reconnect-http.json` files retain the first failure and stopped state across
+process/service restarts. Opening the panel, diagnosis and automatic recovery
+do not reset them. Click Start (or run `agent start --dir <existing-profile>`)
+to explicitly retry; CLI-only HTTP publishers use `http resume --config ...`.
+This preserves identities and does not replay interrupted commands or requests.
+
 CLI equivalent (existing provider identity required):
 
 ```sh

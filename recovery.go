@@ -88,7 +88,8 @@ func (r *enrollmentRecovery) lock(ctx context.Context) error {
 }
 func (r *enrollmentRecovery) unlock() { <-r.gate }
 
-func connect(ctx context.Context, c *Config, hello Hello) (*websocket.Conn, Paired, error) {
+func connect(ctx context.Context, c *Config, hello Hello) (wsResult *websocket.Conn, pairedResult Paired, result error) {
+	defer func() { result = budgetFor(c, "ssh").result(result, ctx) }()
 	// Retry only before a pair exists: no TLS, SSH or application bytes have
 	// been sent. Live sessions and commands are never replayed. The caller's
 	// deadline bounds the total wait, including the relay's 5-second windows.
@@ -157,7 +158,16 @@ func connectOnce(ctx context.Context, c *Config, hello Hello) (*websocket.Conn, 
 // The existing service certificate plus proof of its private key is sufficient
 // to restore a lost caller registration. No invitation seed or new identity is
 // needed. The server still enforces CA, expiry, scope and revocation checks.
-func restoreCaller(ctx context.Context, c *Config, provider, service string) error {
+func restoreCaller(ctx context.Context, c *Config, provider, service string) (result error) {
+	parent := ctx
+	budget := budgetFor(c, "ssh")
+	limited, cancel, err := budget.attempt(ctx)
+	if err != nil {
+		return err
+	}
+	ctx = limited
+	defer cancel()
+	defer func() { result = budget.result(result, parent) }()
 	peer, ok := c.Peers[provider]
 	if !ok || peer.ClientCertificates[service] == "" {
 		return errors.New("no saved service enrollment; use the original manual registration procedure")
@@ -239,6 +249,7 @@ func registerCaller(ctx context.Context, c *Config, provider, service, issued st
 
 func registerProviderUntilAvailable(ctx context.Context, c *Config) error {
 	backoff := reconnectBackoff{}
+	budget := budgetFor(c, "ssh")
 	for {
 		err := registerProvider(ctx, c)
 		if err == nil || !retryableEnrollment(err) {
@@ -246,7 +257,7 @@ func registerProviderUntilAvailable(ctx context.Context, c *Config) error {
 		}
 		wait := backoff.next()
 		fmt.Fprintf(os.Stderr, "%v; retrying in %s\n", err, wait)
-		if err := waitReconnect(ctx, wait); err != nil {
+		if err := budget.wait(ctx, wait); err != nil {
 			return err
 		}
 	}

@@ -16,6 +16,14 @@ type connectionProblem struct {
 
 func describeConnectionError(err error) *connectionProblem {
 	p := &connectionProblem{Code: "CONNECTION_FAILED", Side: "local", Message: err.Error(), NextAction: "查看此错误和本机配置"}
+	if errors.Is(err, errReconnectState) {
+		p.Code, p.Message, p.NextAction = "RECONNECT_STATE_UNAVAILABLE", "重连状态无法读写，自动连接已停止", "检查本机重连状态文件和磁盘权限"
+		return p
+	}
+	if errors.Is(err, errReconnectStopped) || strings.Contains(err.Error(), "RECONNECT_STOPPED") {
+		p.Code, p.Side, p.Message, p.NextAction = "RECONNECT_STOPPED", "relay", "连续 2 小时未恢复，自动重连已停止", "请手动点击启动后重试；保留原身份和配对"
+		return p
+	}
 	if code := strings.SplitN(err.Error(), ":", 2)[0]; regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`).MatchString(code) {
 		p.Code = code
 	}

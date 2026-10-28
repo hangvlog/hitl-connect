@@ -221,6 +221,9 @@ func (g *guiSession) handler() http.Handler {
 			if g.runtime != nil {
 				g.runtime.project(&g.state)
 			}
+			if p := g.reconnectProblem(); p != nil {
+				g.state.Problem = p
+			}
 			if g.state.Role == "host" {
 				g.state.Access = listSSHAccess(filepath.Join(g.base, "public-host"))
 				g.refreshHostGrant()
@@ -251,7 +254,7 @@ func (g *guiSession) handler() http.Handler {
 		}
 		var err error
 		switch r.URL.Path {
-		case "/api/http-services", "/api/http-publish", "/api/http-disable", "/api/http-credentials":
+		case "/api/http-services", "/api/http-publish", "/api/http-disable", "/api/http-credentials", "/api/http-resume":
 			g.httpAction(w, r, request)
 			return
 		case "/api/disable-code":
@@ -260,9 +263,15 @@ func (g *guiSession) handler() http.Handler {
 			err = g.renewGrant()
 		case "/api/allow":
 			request.Role, request.AllowSSH = "host", true
-			err = g.ensureConnection(request)
+			err = g.resetReconnectLimit(request)
+			if err == nil {
+				err = g.ensureConnection(request)
+			}
 		case "/api/start":
-			err = g.ensureConnection(request)
+			err = g.resetReconnectLimit(request)
+			if err == nil {
+				err = g.ensureConnection(request)
+			}
 		case "/api/drain":
 			err = g.drainProvider(r.Context())
 		case "/api/stop":
@@ -386,8 +395,22 @@ func runGUI(ctx context.Context, base, bind string, noOpen bool) error {
 			config := filepath.Join(base, "public-host", "config.json")
 			for ctx.Err() == nil {
 				if _, err := load(config); err == nil {
-					_ = runHTTPPublications(ctx, config)
-					return
+					err := runHTTPPublications(ctx, config)
+					if !isReconnectStopped(err) {
+						return
+					}
+					// Remain locally idle until an explicit start resets the saved
+					// clock. Never send a network probe from this waiting loop.
+					g.event("HTTP 自动重连已停止；请手动启动后重试")
+					for ctx.Err() == nil {
+						c, e := load(config)
+						if e == nil && budgetFor(c, "http").wait(ctx, 0) == nil {
+							break
+						}
+						if waitReconnect(ctx, time.Second) != nil {
+							return
+						}
+					}
 				}
 				select {
 				case <-ctx.Done():

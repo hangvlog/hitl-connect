@@ -259,6 +259,10 @@ func (g *guiSession) processLine(line string, generation uint64) {
 		return
 	}
 	switch {
+	case strings.Contains(line, "RECONNECT_STOPPED"):
+		g.state.Problem = describeConnectionError(errReconnectStopped)
+		g.stepLocked("relay", "failed", g.state.Problem.Message)
+		g.rememberStopped()
 	case line == "tunnel-ready" && g.state.Role == "connect":
 		g.stepLocked("relay", "passed", "最近一次连接已通过中继")
 		g.stepLocked("tunnel", "passed", "最近一次端到端加密与远端服务检查已通过；账号登录单独验证")

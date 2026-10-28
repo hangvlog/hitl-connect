@@ -20,6 +20,7 @@ function render(next){
  $('system-ssh-hint').hidden=state.sshEngine!=='openssh';
  $('embedded-ssh-hint').hidden=state.sshEngine==='openssh';
  for(const id of ['start','host-role','connect-role'])$(id).disabled=running||busy||offline;
+ if(state.problem?.code==='RECONNECT_STOPPED')$('start').disabled=busy||offline;
  for(const id of ['code','target','listen'])$(id).disabled=running||busy||offline;
  for(const id of ['stop','diagnose'])$(id).disabled=!running||busy;
  $('trust').disabled=busy;$('quit').disabled=busy;
@@ -66,8 +67,9 @@ if(!token){notice('请双击 HITL Connect 程序打开管理面板。');for(cons
 
 async function renderHTTP(){
  try{const data=await api('http-services',{});$('http-list').replaceChildren();
+ if(data.reconnectStopped){const resume=document.createElement('button');resume.textContent='自动重连已停止 · 手动重试';resume.onclick=async()=>{await action('http-resume',{});await renderHTTP()};$('http-list').append(resume)}
  for(const service of data.items){const row=document.createElement('div'),label=document.createElement('p'),url=document.createElement('code'),copy=document.createElement('button'),disable=document.createElement('button');
- label.textContent=service.name+' → '+service.target+' · '+(!service.enabled?'已停用':data.connected?'已连接，等待调用':'等待连接');url.textContent=service.url;copy.textContent='复制调用配置';disable.textContent='停用';disable.disabled=!service.enabled;
+ label.textContent=service.name+' → '+service.target+' · '+(!service.enabled?'已停用':data.connected?'已连接，等待调用':data.reconnectStopped?'自动重连已停止':'等待连接');url.textContent=service.url;copy.textContent='复制调用配置';disable.textContent='停用';disable.disabled=!service.enabled;
  copy.onclick=async()=>{try{const result=await api('http-credentials',{serviceName:service.name});await navigator.clipboard.writeText(JSON.stringify(result,null,2));notice('调用配置已复制，请私密保存 Token');}catch(e){notice(e.message)}};
  disable.onclick=async()=>{try{await api('http-disable',{serviceName:service.name});await renderHTTP();}catch(e){notice(e.message)}};
  row.append(label,url,copy,disable);$('http-list').append(row);}

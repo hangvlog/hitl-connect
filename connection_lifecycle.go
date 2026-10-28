@@ -13,6 +13,15 @@ func (g *guiSession) ensureConnection(request guiRequest) error {
 	if err != nil {
 		return err
 	}
+	if c, e := load(filepath.Join(g.base, "public-"+r.Role, "config.json")); e == nil {
+		b := budgetFor(c, "ssh")
+		b.mu.Lock()
+		e = b.checkLocked(time.Now())
+		b.mu.Unlock()
+		if e != nil {
+			return e
+		}
+	}
 	g.mu.Lock()
 	running, role, address := g.state.Running, g.state.Role, g.address
 	g.mu.Unlock()

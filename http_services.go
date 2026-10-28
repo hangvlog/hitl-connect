@@ -171,11 +171,19 @@ func runHTTPPublications(ctx context.Context, config string) error {
 	}
 	defer release()
 	backoff := reconnectBackoff{}
+	var budget *reconnectBudget
 	for ctx.Err() == nil {
 		wait := time.Second // Local configuration polling makes no relay requests.
 		c, err := load(config)
 		p, e := readHTTPPublications(config)
 		if err == nil && e == nil && len(p.Services) > 0 {
+			budget = budgetFor(c, "http")
+			_, cancelAttempt, attemptErr := budget.attempt(ctx)
+			if attemptErr != nil {
+				return attemptErr
+			}
+			// Budget bounds retries/handshakes, not an already acknowledged stream.
+			cancelAttempt()
 			child, cancel := context.WithCancel(ctx)
 			done := make(chan struct{})
 			before, _ := json.Marshal(p)
@@ -203,6 +211,9 @@ func runHTTPPublications(ctx context.Context, config string) error {
 			cancel()
 			<-done
 			if ctx.Err() == nil && !configurationChanged {
+				if stopped := budget.failure(); stopped != nil {
+					return stopped
+				}
 				if !online.IsZero() && time.Since(online) >= reconnectStable {
 					backoff = reconnectBackoff{}
 				}
@@ -217,7 +228,14 @@ func runHTTPPublications(ctx context.Context, config string) error {
 				fmt.Fprintf(os.Stderr, "HTTP publication disconnected; reconnecting in %s without replay\n", wait)
 			}
 		}
-		if waitReconnect(ctx, wait) != nil {
+		if budget != nil {
+			if err := budget.wait(ctx, wait); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+		} else if waitReconnect(ctx, wait) != nil {
 			return nil
 		}
 	}
@@ -269,11 +287,18 @@ func serveHTTPPublicationsReady(ctx context.Context, c *Config, p httpPublicatio
 		return err
 	}
 	defer ws.CloseNow()
+	handshakeCtx, cancelHandshake, budgetErr := budgetFor(c, "http").attempt(ctx)
+	if budgetErr != nil {
+		return budgetErr
+	}
+	defer cancelHandshake()
+	handshakeCtx, cancelHandshakeTimeout := context.WithTimeout(handshakeCtx, 10*time.Second)
+	defer cancelHandshakeTimeout()
 	hello, _ := json.Marshal(map[string]any{"role": "http-control", "certificate": string(cert), "signature": base64.StdEncoding.EncodeToString(signature), "publication": map[string]any{"format": 2, "version": version, "services": services}})
-	if err = ws.Write(ctx, websocket.MessageText, hello); err != nil {
+	if err = ws.Write(handshakeCtx, websocket.MessageText, hello); err != nil {
 		return err
 	}
-	kind, b, err := ws.Read(ctx)
+	kind, b, err := ws.Read(handshakeCtx)
 	if err != nil {
 		return err
 	}
@@ -285,6 +310,8 @@ func serveHTTPPublicationsReady(ctx context.Context, c *Config, p httpPublicatio
 	}
 	fmt.Println("HTTP services published")
 	httpPublicationStates.Store(c.path, true)
+	stopHealthy := budgetFor(c, "http").online()
+	defer stopHealthy()
 	ready()
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -408,7 +435,7 @@ func httpCommand(ctx context.Context, args []string) error {
 		args = args[1:]
 	}
 	if action == "help" || action == "--help" {
-		fmt.Println("HTTP service publishing: http publish --config <provider-config> --port 8000 [--name model-api] --output <private-credentials>; http list --config ...; http disable --config ... --name ...; http run --config ...\nExisting providers reuse their saved identity. GUI providers run publications automatically. CLI-only providers run http run alongside host. Never put tokens in arguments.")
+		fmt.Println("HTTP service publishing: http publish --config <provider-config> --port 8000 [--name model-api] --output <private-credentials>; http list --config ...; http disable --config ... --name ...; http run --config ...; http resume --config ... (manual reset after two-hour stop)\nExisting providers reuse their saved identity. GUI providers run publications automatically. CLI-only providers run http run alongside host. Never put tokens in arguments.")
 		return nil
 	}
 	f := flag.NewFlagSet("http "+action, flag.ContinueOnError)
@@ -428,6 +455,12 @@ func httpCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if action == "run" {
+		return runHTTPPublications(ctx, *config)
+	}
+	if action == "resume" {
+		if err := budgetFor(c, "http").manualReset(); err != nil {
+			return err
+		}
 		return runHTTPPublications(ctx, *config)
 	}
 	if action == "claim-proof" {
@@ -496,6 +529,8 @@ func (g *guiSession) httpAction(w http.ResponseWriter, r *http.Request, request 
 		_, err = saveHTTPPublication(config, request.ServiceName, net.JoinHostPort("127.0.0.1", strconv.Itoa(request.HTTPPort)), true)
 	} else if r.URL.Path == "/api/http-disable" {
 		_, err = saveHTTPPublication(config, request.ServiceName, "", false)
+	} else if r.URL.Path == "/api/http-resume" {
+		err = budgetFor(c, "http").manualReset()
 	}
 	if err != nil {
 		fail(err)
@@ -520,5 +555,9 @@ func (g *guiSession) httpAction(w http.ResponseWriter, r *http.Request, request 
 		fail(errors.New("服务不存在"))
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"items": items, "connected": connected == true})
+	b := budgetFor(c, "http")
+	b.mu.Lock()
+	retryErr := b.checkLocked(time.Now())
+	b.mu.Unlock()
+	_ = json.NewEncoder(w).Encode(map[string]any{"items": items, "connected": connected == true, "reconnectStopped": isReconnectStopped(retryErr)})
 }

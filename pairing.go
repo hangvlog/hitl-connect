@@ -476,7 +476,16 @@ func pairingCommand(command, config, dir, relay, service, target, keyFile string
 	return join(c, invitation)
 }
 
-func registerProvider(ctx context.Context, c *Config) error {
+func registerProvider(ctx context.Context, c *Config) (result error) {
+	parent := ctx
+	budget := budgetFor(c, "ssh")
+	limited, cancel, err := budget.attempt(ctx)
+	if err != nil {
+		return err
+	}
+	ctx = limited
+	defer cancel()
+	defer func() { result = budget.result(result, parent) }()
 	file := localPath(c, "registration.json")
 	if err := exportRegistration(c, file); err != nil {
 		return err
@@ -527,14 +536,14 @@ func registerProvider(ctx context.Context, c *Config) error {
 	if err != nil {
 		return err
 	}
-	var result struct {
+	var registered struct {
 		ID string `json:"id"`
 	}
 	if err = enrollmentRequestContext(ctx, endpoint+"/provider", map[string]any{"certificate": string(certificate), "version": version,
-		"registration": registration, "signature": base64.StdEncoding.EncodeToString(signature)}, &result); err != nil {
+		"registration": registration, "signature": base64.StdEncoding.EncodeToString(signature)}, &registered); err != nil {
 		return err
 	}
-	if result.ID != c.ID {
+	if registered.ID != c.ID {
 		return errors.New("unexpected registration response")
 	}
 	return nil

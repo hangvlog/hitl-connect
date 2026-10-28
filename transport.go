@@ -33,29 +33,41 @@ func dialRelayWithReady(ctx context.Context, c *Config, hello Hello, opened func
 		return nil, Paired{}, err
 	}
 	idle := false
+	stopHealthy := func() {}
 	defer func() {
+		stopHealthy()
 		if idle && c.runtime != nil {
 			c.runtime.pool(-1)
 		}
 	}()
 	ws.SetReadLimit(65536)
+	readCtx, cancelBudget, budgetErr := budgetFor(c, "ssh").attempt(ctx)
+	if budgetErr != nil {
+		ws.CloseNow()
+		return nil, Paired{}, budgetErr
+	}
+	defer cancelBudget()
 	bytes, _ := json.Marshal(hello)
-	if err = ws.Write(ctx, websocket.MessageText, bytes); err != nil {
+	if err = ws.Write(readCtx, websocket.MessageText, bytes); err != nil {
 		ws.CloseNow()
 		return nil, Paired{}, pairingError(err)
 	}
 	for {
-		kind, bytes, readErr := ws.Read(ctx)
+		kind, bytes, readErr := ws.Read(readCtx)
 		var paired Paired
 		if readErr != nil || kind != websocket.MessageText || len(bytes) > 1024 || json.Unmarshal(bytes, &paired) != nil {
 			ws.CloseNow()
 			return nil, Paired{}, pairingError(readErr)
 		}
 		if paired.State == "waiting" && hello.Role == "accept" {
-			if !idle && c.runtime != nil {
-				c.runtime.pool(1)
+			if !idle {
+				stopHealthy = budgetFor(c, "ssh").online()
 				idle = true
+				if c.runtime != nil {
+					c.runtime.pool(1)
+				}
 			}
+			readCtx = ctx // Acknowledged idle slot is an online provider connection.
 			continue
 		}
 		if paired.State != "paired" || (hello.Service != "" && paired.Service != hello.Service) || !identifier.MatchString(paired.Peer) || (hello.Role == "dial" && paired.Peer != hello.Target) {

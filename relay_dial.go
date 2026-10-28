@@ -14,8 +14,20 @@ import (
 	"github.com/coder/websocket"
 )
 
-func openRelay(ctx context.Context, c *Config, endpoint string) (*websocket.Conn, error) {
+func openRelay(ctx context.Context, c *Config, endpoint string) (wsResult *websocket.Conn, result error) {
 	parent := ctx
+	channel := "ssh"
+	if strings.Contains(endpoint, "/http-v1/") {
+		channel = "http"
+	}
+	budget := budgetFor(c, channel)
+	limited, cancelBudget, budgetErr := budget.attempt(ctx)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+	ctx = limited
+	defer cancelBudget()
+	defer func() { result = budget.result(result, parent) }()
 	gate := retryGate(endpoint)
 	epoch, err := gate.acquire(ctx)
 	if err != nil {

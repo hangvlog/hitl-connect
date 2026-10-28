@@ -21,6 +21,7 @@ func acceptSession(ctx context.Context, c *Config, ws *websocket.Conn, paired Pa
 	finish := sessionReporter(c, paired, "accept")
 	stage := "tls"
 	var result error
+	defer func() { _ = budgetFor(c, "ssh").result(result, ctx) }()
 	defer func() { finish(stage, result, metrics) }()
 	if !slices.Contains(service.Allow, paired.Peer) && service.PairingCA == "" {
 		result = errors.New("peer denied")
@@ -59,6 +60,8 @@ func acceptSession(ctx context.Context, c *Config, ws *websocket.Conn, paired Pa
 			c.runtime.ready()
 		}
 		stage = "stream"
+		stopHealthy := budgetFor(c, "ssh").online()
+		defer stopHealthy()
 		certs := encrypted.ConnectionState().PeerCertificates
 		digest := sha256.Sum256(certs[0].RawSubjectPublicKeyInfo)
 		fmt.Printf("connected peer=%s service=ssh engine=HITL-Connect\n", paired.Peer)
@@ -91,6 +94,8 @@ func acceptSession(ctx context.Context, c *Config, ws *websocket.Conn, paired Pa
 		c.runtime.ready()
 	}
 	stage = "stream"
+	stopHealthy := budgetFor(c, "ssh").online()
+	defer stopHealthy()
 	result = pipeMeasured(ctx, tcp, encrypted, metrics)
 }
 func serve(ctx context.Context, c *Config) error {
@@ -142,7 +147,10 @@ func serve(ctx context.Context, c *Config) error {
 					}
 					wait := backoff.next()
 					fmt.Fprintf(os.Stderr, "%v; reconnecting in %s\n", err, wait)
-					if waitReconnect(ctx, wait) != nil {
+					if err := budgetFor(c, "ssh").wait(ctx, wait); err != nil {
+						if isReconnectStopped(err) {
+							fmt.Fprintln(os.Stderr, err)
+						}
 						return
 					}
 					continue
@@ -155,6 +163,9 @@ func serve(ctx context.Context, c *Config) error {
 	}
 	fmt.Printf("serving device=%s services=%d\n", c.ID, len(c.Services))
 	workers.Wait()
+	if err := budgetFor(c, "ssh").wait(ctx, 0); isReconnectStopped(err) {
+		return err
+	}
 	return nil
 }
 func forward(ctx context.Context, c *Config, peerID, service, bind string) error {
@@ -231,6 +242,7 @@ func forwardConnection(ctx, dialCtx context.Context, c *Config, peerID, service 
 	finish := sessionReporter(c, paired, "dial")
 	stage := "tls"
 	var result error
+	defer func() { _ = budgetFor(c, "ssh").result(result, ctx) }()
 	defer func() { finish(stage, result, metrics) }()
 	encrypted, err := secure(ctx, c, ws, paired, false)
 	if err != nil {
@@ -247,6 +259,8 @@ func forwardConnection(ctx, dialCtx context.Context, c *Config, peerID, service 
 		c.runtime.ready()
 	}
 	fmt.Println("tunnel-ready")
+	stopHealthy := budgetFor(c, "ssh").online()
+	defer stopHealthy()
 	stage = "stream"
 	result = pipeMeasured(ctx, conn.(*net.TCPConn), encrypted, metrics)
 }
