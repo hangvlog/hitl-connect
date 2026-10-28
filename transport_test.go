@@ -131,7 +131,7 @@ func TestDialPairingRecovery(t *testing.T) {
 				_, _, _ = ws.Read(r.Context())
 			}))
 			defer server.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if reason == "CANCEL" {
 				cancel()

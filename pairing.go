@@ -295,17 +295,29 @@ func enrollmentRequestContext(ctx context.Context, endpoint string, value any, r
 		return &relayFailure{cause: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	gate := retryGate(endpoint)
+	epoch, err := gate.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	var transportOK, unavailable bool
+	var after time.Duration
+	defer func() { gate.finish(epoch, transportOK, unavailable, after) }()
 	res, err := client.Do(req)
 	if err != nil {
+		unavailable = ctx.Err() == nil
 		return &relayFailure{cause: err}
 	}
 	defer res.Body.Close()
+	after = retryAfter(res.Header.Get("Retry-After"), time.Now())
+	unavailable = res.StatusCode == 429 || res.StatusCode >= 500
+	transportOK = !unavailable
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
 		var failure struct {
 			Code string `json:"code"`
 		}
 		_ = json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&failure)
-		return &relayFailure{status: res.StatusCode, code: failure.Code}
+		return &relayFailure{status: res.StatusCode, code: failure.Code, retryAfter: after}
 	}
 	return json.NewDecoder(io.LimitReader(res.Body, 32768)).Decode(result)
 }

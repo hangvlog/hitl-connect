@@ -15,6 +15,15 @@ import (
 )
 
 func openRelay(ctx context.Context, c *Config, endpoint string) (*websocket.Conn, error) {
+	parent := ctx
+	gate := retryGate(endpoint)
+	epoch, err := gate.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var transportOK, unavailable bool
+	var after time.Duration
+	defer func() { gate.finish(epoch, transportOK, unavailable, after) }()
 	// Keep room for a second attempt within the existing 15-second caller
 	// budget. The provider also benefits from quicker recovery of a stalled dial.
 	timeout := 4 * time.Second
@@ -42,17 +51,24 @@ func openRelay(ctx context.Context, c *Config, endpoint string) (*websocket.Conn
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}, "X-Connect-Local-Ips": {strings.Join(localAddresses(), ",")}}, CompressionMode: websocket.CompressionDisabled,
 	})
 	if err == nil {
+		transportOK = true
 		return ws, nil
 	}
+	unavailable = parent.Err() == nil
 	failure := &relayFailure{stage: stage.Load().(string), cause: err, reason: "transport interrupted"}
 	if response != nil {
+		after = retryAfter(response.Header.Get("Retry-After"), time.Now())
+		unavailable = response.StatusCode == 429 || response.StatusCode >= 500
+		transportOK = !unavailable
 		failure.status = response.StatusCode
+		failure.retryAfter = after
 		failure.stage, failure.reason = "websocket", "HTTP response rejected"
 	}
 	var verification *tls.CertificateVerificationError
 	var network net.Error
 	switch {
 	case errors.As(err, &verification):
+		unavailable = false
 		failure.reason, failure.permanent = "certificate verification rejected", true
 	case errors.Is(err, context.Canceled):
 		failure.reason, failure.permanent = "operation canceled", true

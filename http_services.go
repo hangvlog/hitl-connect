@@ -170,7 +170,9 @@ func runHTTPPublications(ctx context.Context, config string) error {
 		return errors.New("HTTP publisher already running")
 	}
 	defer release()
+	backoff := reconnectBackoff{}
 	for ctx.Err() == nil {
+		wait := time.Second // Local configuration polling makes no relay requests.
 		c, err := load(config)
 		p, e := readHTTPPublications(config)
 		if err == nil && e == nil && len(p.Services) > 0 {
@@ -195,22 +197,36 @@ func runHTTPPublications(ctx context.Context, config string) error {
 					}
 				}
 			}()
-			err = serveHTTPPublications(child, c, p)
+			var online time.Time
+			err = serveHTTPPublicationsReady(child, c, p, func() { online = time.Now() })
+			configurationChanged := child.Err() != nil && ctx.Err() == nil
 			cancel()
 			<-done
-			if ctx.Err() == nil && err != nil {
-				fmt.Fprintln(os.Stderr, "HTTP publication disconnected; retrying without replay")
+			if ctx.Err() == nil && !configurationChanged {
+				if !online.IsZero() && time.Since(online) >= reconnectStable {
+					backoff = reconnectBackoff{}
+				}
+				wait = backoff.next()
+				var failure *relayFailure
+				if errors.As(err, &failure) {
+					wait = max(wait, failure.retryAfter)
+					if failure.permanent || (failure.status >= 400 && failure.status < 500 && failure.status != 429 && failure.status != 401) {
+						return err
+					}
+				}
+				fmt.Fprintf(os.Stderr, "HTTP publication disconnected; reconnecting in %s without replay\n", wait)
 			}
 		}
-		select {
-		case <-ctx.Done():
+		if waitReconnect(ctx, wait) != nil {
 			return nil
-		case <-time.After(time.Second):
 		}
 	}
 	return nil
 }
 func serveHTTPPublications(ctx context.Context, c *Config, p httpPublications) error {
+	return serveHTTPPublicationsReady(ctx, c, p, func() {})
+}
+func serveHTTPPublicationsReady(ctx context.Context, c *Config, p httpPublications, ready func()) error {
 	httpPublicationStates.Store(c.path, false)
 	defer httpPublicationStates.Store(c.path, false)
 	endpoint, err := httpRelayURL(c)
@@ -269,6 +285,7 @@ func serveHTTPPublications(ctx context.Context, c *Config, p httpPublications) e
 	}
 	fmt.Println("HTTP services published")
 	httpPublicationStates.Store(c.path, true)
+	ready()
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup

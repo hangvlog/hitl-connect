@@ -29,6 +29,7 @@ type relayFailure struct {
 	stage, reason string
 	permanent     bool
 	cause         error
+	retryAfter    time.Duration
 }
 
 func (e *relayFailure) Unwrap() error { return e.cause }
@@ -237,23 +238,16 @@ func registerCaller(ctx context.Context, c *Config, provider, service, issued st
 }
 
 func registerProviderUntilAvailable(ctx context.Context, c *Config) error {
-	backoff := time.Second
+	backoff := reconnectBackoff{}
 	for {
 		err := registerProvider(ctx, c)
 		if err == nil || !retryableEnrollment(err) {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%v; retrying in %s\n", err, backoff)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff < 30*time.Second {
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
+		wait := backoff.next()
+		fmt.Fprintf(os.Stderr, "%v; retrying in %s\n", err, wait)
+		if err := waitReconnect(ctx, wait); err != nil {
+			return err
 		}
 	}
 }

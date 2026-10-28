@@ -134,7 +134,7 @@ func TestProviderStartupWaitsForServiceButNotRevocation(t *testing.T) {
 			if err = share(c, "ssh", "127.0.0.1:22"); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
 			err = registerProviderUntilAvailable(ctx, c)
 			if revoked {

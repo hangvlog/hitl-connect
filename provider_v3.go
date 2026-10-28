@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"path/filepath"
 	"sync"
 	"time"
@@ -36,30 +35,27 @@ func serveV3(ctx context.Context, c *Config) error {
 	defer sessions.Wait()
 	active := make(chan struct{}, c.capacity().ProviderConnections)
 	dials := make(chan struct{}, 8)
-	backoff := time.Second
+	backoff := reconnectBackoff{}
 	fmt.Printf("serving device=%s services=%d protocol=v3\n", c.ID, len(c.Services))
 	for ctx.Err() == nil {
 		started := time.Now()
-		err = providerGeneration(ctx, c, instance, pool, active, dials, &sessions)
+		var online time.Time
+		err = providerGeneration(ctx, c, instance, pool, active, dials, &sessions, func() { online = time.Now() })
 		if ctx.Err() != nil {
 			return nil
 		}
 		reportLifecycle(c, instance, "control", "closed", "control", err, time.Since(started), nil)
-		if time.Since(started) >= time.Minute {
-			backoff = time.Second
+		if !online.IsZero() && time.Since(online) >= reconnectStable {
+			backoff = reconnectBackoff{}
 		}
-		wait := backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))
-		select {
-		case <-ctx.Done():
+		if waitReconnect(ctx, backoff.next()) != nil {
 			return nil
-		case <-time.After(wait):
 		}
-		backoff = min(30*time.Second, backoff*2)
 	}
 	return nil
 }
 
-func providerGeneration(ctx context.Context, c *Config, instance string, pool int, active, dials chan struct{}, sessions *sync.WaitGroup) error {
+func providerGeneration(ctx context.Context, c *Config, instance string, pool int, active, dials chan struct{}, sessions *sync.WaitGroup, ready func()) error {
 	endpoint, err := relayURL(c)
 	if err != nil {
 		return err
@@ -105,6 +101,7 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 		heartbeatInterval = 20 * time.Second
 	}
 	c.runtime.control(true)
+	ready()
 	defer c.runtime.control(false)
 	reportLifecycle(c, instance, "control", "online", "control", nil, 0, nil)
 	generationCtx, stop := context.WithCancel(ctx)
@@ -179,7 +176,7 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 }
 
 func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation string, active, dials chan struct{}, sessions *sync.WaitGroup, index, base, maximum int) {
-	backoff := time.Second
+	backoff := reconnectBackoff{}
 	for idleCtx.Err() == nil {
 		if index >= desiredIdle(base, maximum, c.runtime.activeCount()) {
 			select {
@@ -222,15 +219,12 @@ func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation str
 				return
 			}
 			reportLifecycle(c, newTransportTrace(), "accept", "failed", "pool", err, 0, nil)
-			select {
-			case <-idleCtx.Done():
+			if waitReconnect(idleCtx, backoff.next()) != nil {
 				return
-			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
 			}
-			backoff = min(30*time.Second, backoff*2)
 			continue
 		}
-		backoff = time.Second
+		backoff = reconnectBackoff{}
 		if !c.runtime.begin() {
 			<-active
 			ws.CloseNow()

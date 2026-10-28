@@ -75,6 +75,19 @@ restart SSH sessions; the background panel owns a separate reconnecting HTTP con
 Disabling a service stops new calls and closes its active HTTP requests. Stopping SSH
 alone does not disable HTTP publications; disable them separately or quit the provider.
 
+Relay outages (HTTP 429/5xx and network failures) use exponential cooldowns of
+5, 10, 20, 40, 80, 160, then 300 seconds, with 0–20% positive jitter. Once at
+the cap, a persistent outage receives at most one probe every five minutes per
+relay origin per process. SSH slots, HTTP publications and enrollment share the
+gate: at most eight initial handshakes may already be in flight, and only one
+probe is admitted during recovery. Independent processes/devices have independent
+gates; their jitter reduces synchronization but is not a server-wide rate limit.
+`Retry-After` seconds and HTTP dates extend cooldowns (bounded to 24 hours).
+Brief successful handshakes do not reset the failure history; a healthy minute
+does. Cancellation ends waiting promptly, and no application request is replayed.
+HTTP reconnect logs include the next delay. Fully disabled publication records
+remain synchronized with the relay, using the same outage backoff.
+
 CLI equivalent (existing provider identity required):
 
 ```sh

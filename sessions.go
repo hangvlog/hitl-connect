@@ -127,7 +127,7 @@ func serve(ctx context.Context, c *Config) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			backoff := time.Second
+			backoff := reconnectBackoff{}
 			for ctx.Err() == nil {
 				select {
 				case slots <- struct{}{}:
@@ -140,18 +140,14 @@ func serve(ctx context.Context, c *Config) error {
 					if ctx.Err() != nil {
 						return
 					}
-					fmt.Fprintf(os.Stderr, "%v; reconnecting in %s\n", err, backoff)
-					select {
-					case <-time.After(backoff):
-					case <-ctx.Done():
+					wait := backoff.next()
+					fmt.Fprintf(os.Stderr, "%v; reconnecting in %s\n", err, wait)
+					if waitReconnect(ctx, wait) != nil {
 						return
-					}
-					if backoff < 8*time.Second {
-						backoff *= 2
 					}
 					continue
 				}
-				backoff = time.Second
+				backoff = reconnectBackoff{}
 				workers.Add(1)
 				go func() { defer workers.Done(); defer func() { <-slots }(); acceptSession(ctx, c, ws, paired, service) }()
 			}
