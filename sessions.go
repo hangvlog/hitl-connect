@@ -136,7 +136,7 @@ func serve(ctx context.Context, c *Config) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			backoff := reconnectBackoff{}
+
 			for ctx.Err() == nil {
 				select {
 				case slots <- struct{}{}:
@@ -149,8 +149,8 @@ func serve(ctx context.Context, c *Config) error {
 					if ctx.Err() != nil {
 						return
 					}
-					wait := backoff.next()
-					fmt.Fprintf(os.Stderr, "%v; reconnecting in %s\n", err, wait)
+					wait := retryMinimum()
+					fmt.Fprintf(os.Stderr, "%v; reconnecting with saved backoff\n", err)
 					if err := budgetFor(c, "ssh").wait(ctx, wait); err != nil {
 						if isReconnectStopped(err) {
 							fmt.Fprintln(os.Stderr, err)
@@ -159,7 +159,7 @@ func serve(ctx context.Context, c *Config) error {
 					}
 					continue
 				}
-				backoff = reconnectBackoff{}
+
 				workers.Add(1)
 				go func() { defer workers.Done(); defer func() { <-slots }(); acceptSession(ctx, c, ws, paired, service) }()
 			}

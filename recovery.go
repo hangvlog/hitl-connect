@@ -248,15 +248,15 @@ func registerCaller(ctx context.Context, c *Config, provider, service, issued st
 }
 
 func registerProviderUntilAvailable(ctx context.Context, c *Config) error {
-	backoff := reconnectBackoff{}
+
 	budget := budgetFor(c, "ssh")
 	for {
 		err := registerProvider(ctx, c)
 		if err == nil || !retryableEnrollment(err) {
 			return err
 		}
-		wait := backoff.next()
-		fmt.Fprintf(os.Stderr, "%v; retrying in %s\n", err, wait)
+		wait := retryMinimum()
+		fmt.Fprintf(os.Stderr, "%v; retrying with saved backoff\n", err)
 		if err := budget.wait(ctx, wait); err != nil {
 			return err
 		}

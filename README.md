@@ -75,29 +75,25 @@ restart SSH sessions; the background panel owns a separate reconnecting HTTP con
 Disabling a service stops new calls and closes its active HTTP requests. Stopping SSH
 alone does not disable HTTP publications; disable them separately or quit the provider.
 
-Relay outages (HTTP 429/5xx and network failures) use exponential cooldowns of
-5, 10, 20, 40, 80, 160, then 300 seconds, with 0–20% positive jitter. Once at
-the cap, a persistent outage receives at most one probe every five minutes per
-relay origin per process. SSH slots, HTTP publications and enrollment share the
-gate: at most eight initial handshakes may already be in flight, and only one
-probe is admitted during recovery. Independent processes/devices have independent
-gates; their jitter reduces synchronization but is not a server-wide rate limit.
-`Retry-After` seconds and HTTP dates extend cooldowns (bounded to 24 hours).
-Brief successful handshakes do not reset the failure history; a healthy minute
-does. Cancellation ends waiting promptly, and no application request is replayed.
-HTTP reconnect logs include the next delay. Fully disabled publication records
-remain synchronized with the relay, using the same outage backoff.
+Transient outages retry indefinitely: the nominal delay starts at 5 seconds,
+then doubles to 4 hours. Six failed scheduled probes at the 4-hour tier raise
+it to 8 hours; three at 8 hours raise it to 16 hours; three at 16 hours raise
+it to the final 24-hour tier. Each wait is randomized to 80–100% of its nominal
+delay. Retry-After can lengthen a wait, bounded to 24 hours. The shared relay
+admission gate allows at most eight initial handshakes in flight and one probe
+at a time during recovery; it does not replay SSH commands or HTTP requests.
 
-Automatic reconnect stops after **two hours from the first failure**, including
-cooldown and enrollment time. No new network attempt is admitted at or after the
-deadline. SSH and HTTP have separate clocks; an acknowledged connection must
-remain online for 60 seconds to clear its outage. A successful HTTP/WebSocket
-handshake alone does not reset the clock. Private `reconnect-ssh.json` and
-`reconnect-http.json` files retain the first failure and stopped state across
-process/service restarts. Opening the panel, diagnosis and automatic recovery
-do not reset them. Click Start (or run `agent start --dir <existing-profile>`)
-to explicitly retry; CLI-only HTTP publishers use `http resume --config ...`.
-This preserves identities and does not replay interrupted commands or requests.
+SSH and HTTP have separate durable schedules in private reconnect-ssh.json and
+reconnect-http.json files. They retain the first failure, nominal delay, tier
+probe count and next attempt across process/service restarts. Continuous
+acknowledged uptime for 60 seconds resets that channel to the initial tier;
+HTTP 101 or successful registration alone does not. The old two-hour timeout
+no longer stops reconnection. Explicit user stop remains in the separate
+connection plan, and revoked credentials are never renewed automatically.
+Click Start (or run agent start --dir <existing-profile>) to clear a cooldown
+and try immediately. HTTP publishers use http resume --config ... . Existing
+legacy timeout files are migrated, but a saved stopped connection plan still
+requires explicit Start because it cannot distinguish a later user stop.
 
 Provider retry budgets track registration, control and waiting-slot failures.
 An individual peer's authentication, command, disconnect or stream error is

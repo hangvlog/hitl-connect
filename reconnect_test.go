@@ -45,10 +45,10 @@ func TestHTTPPublication503DoesNotPollEverySecond(t *testing.T) {
 
 func TestReconnectScheduleAndRetryAfter(t *testing.T) {
 	b := reconnectBackoff{}
-	for i, seconds := range []int{5, 10, 20, 40, 80, 160, 300, 300, 300} {
+	for i, seconds := range []int{5, 10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 14400, 14400, 14400, 14400, 14400, 14400, 28800, 28800, 28800, 57600, 57600, 57600, 86400, 86400} {
 		d := b.next()
 		base := time.Duration(seconds) * time.Second
-		if d < base || d > base+base/5 {
+		if d < base-base/5 || d > base {
 			t.Fatalf("attempt %d: %s", i+1, d)
 		}
 	}
@@ -149,7 +149,7 @@ func TestRelayCooldownRecoveryAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws.CloseNow()
-	if calls.Load() != 2 || time.Since(started) < 4500*time.Millisecond {
+	if calls.Load() != 2 || time.Since(started) < 3900*time.Millisecond {
 		t.Fatalf("cooldown bypassed: calls=%d elapsed=%s", calls.Load(), time.Since(started))
 	}
 }

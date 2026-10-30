@@ -50,7 +50,10 @@ jobs:
           $baseline = "$env:RUNNER_TEMP/short-session-baseline"
           git worktree add --detach $baseline a3da076138c438cb3fe8381300158f3617ce9242
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item reconnect_limit_test.go,transport_test.go $baseline
+          # Keep the original regression-only tests: the current policy tests
+          # intentionally replace the old two-hour limit and use new fields.
+          git show 7edd9519ce03592a1f3ade699570e86cf9e486b8:reconnect_limit_test.go | Set-Content "$baseline/reconnect_limit_test.go" -Encoding utf8
+          git show 7edd9519ce03592a1f3ade699570e86cf9e486b8:transport_test.go | Set-Content "$baseline/transport_test.go" -Encoding utf8
           Push-Location $baseline
           $result = go test . -run '^Test(ReconnectLimitShortSessionHandoffsClearOutage|ReconnectLimitHealthyChannelRecoversAfterConcurrentFailure|ProviderShortSSHSessionDoesNotStartOutage)$' -count=1 -v 2>&1
           $code = $LASTEXITCODE

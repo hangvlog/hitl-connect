@@ -35,13 +35,13 @@ func serveV3(ctx context.Context, c *Config) error {
 	defer sessions.Wait()
 	active := make(chan struct{}, c.capacity().ProviderConnections)
 	dials := make(chan struct{}, 8)
-	backoff := reconnectBackoff{}
+
 	budget := budgetFor(c, "ssh")
 	fmt.Printf("serving device=%s services=%d protocol=v3\n", c.ID, len(c.Services))
 	for ctx.Err() == nil {
 		started := time.Now()
-		var online time.Time
-		err = providerGeneration(ctx, c, instance, pool, active, dials, &sessions, func() { online = time.Now() })
+
+		err = providerGeneration(ctx, c, instance, pool, active, dials, &sessions, func() {})
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -49,10 +49,8 @@ func serveV3(ctx context.Context, c *Config) error {
 			return stopped
 		}
 		reportLifecycle(c, instance, "control", "closed", "control", err, time.Since(started), nil)
-		if !online.IsZero() && time.Since(online) >= reconnectStable {
-			backoff = reconnectBackoff{}
-		}
-		if err := budget.wait(ctx, backoff.next()); err != nil {
+
+		if err := budget.wait(ctx, time.Nanosecond); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -190,7 +188,7 @@ func providerGeneration(ctx context.Context, c *Config, instance string, pool in
 }
 
 func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation string, active, dials chan struct{}, sessions *sync.WaitGroup, index, base, maximum int) {
-	backoff := reconnectBackoff{}
+
 	for idleCtx.Err() == nil {
 		if index >= desiredIdle(base, maximum, c.runtime.activeCount()) {
 			select {
@@ -233,12 +231,12 @@ func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation str
 				return
 			}
 			reportLifecycle(c, newTransportTrace(), "accept", "failed", "pool", err, 0, nil)
-			if budgetFor(c, "ssh").wait(idleCtx, backoff.next()) != nil {
+			if budgetFor(c, "ssh").wait(idleCtx, time.Nanosecond) != nil {
 				return
 			}
 			continue
 		}
-		backoff = reconnectBackoff{}
+
 		if !c.runtime.begin() {
 			<-active
 			if paired.stopHealthy != nil {

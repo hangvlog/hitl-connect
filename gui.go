@@ -36,6 +36,7 @@ type guiStep struct {
 	Detail string `json:"detail"`
 }
 type guiState struct {
+	Reconnect          *reconnectView        `json:"reconnect,omitempty"`
 	ProtocolVersion    int                   `json:"protocolVersion,omitempty"`
 	ControlState       string                `json:"controlState,omitempty"`
 	ControlSeenAt      string                `json:"controlSeenAt,omitempty"`
@@ -224,6 +225,7 @@ func (g *guiSession) handler() http.Handler {
 			if p := g.reconnectProblem(); p != nil {
 				g.state.Problem = p
 			}
+			g.state.Reconnect = retryView(g.base, g.state.Role, "ssh")
 			if g.state.Role == "host" {
 				g.state.Access = listSSHAccess(filepath.Join(g.base, "public-host"))
 				g.refreshHostGrant()

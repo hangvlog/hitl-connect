@@ -7,129 +7,74 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 )
 
-func TestReconnectLimitExactBoundaryAndStableRecovery(t *testing.T) {
+func TestReconnectLimitContinuesBeyondTwoHoursAndPersists(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := &reconnectBudget{}
-		if err := b.failure(); err != nil {
-			t.Fatal(err)
-		}
-		first := b.state.FirstFailure
-		for i := 0; i < 119; i++ {
-			stop := b.online()
-			time.Sleep(30 * time.Second)
-			stop() // Flapping must not reset the outage.
-			time.Sleep(30 * time.Second)
+		_ = b.failure()
+		for i := 0; i < 30; i++ {
+			started := time.Now()
+			if err := b.wait(context.Background(), time.Nanosecond); err != nil {
+				t.Fatal(err)
+			}
+			elapsed := time.Since(started)
+			if elapsed > 24*time.Hour || elapsed <= 0 {
+				t.Fatalf("invalid wait %s", elapsed)
+			}
 			if err := b.failure(); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if b.state.FirstFailure != first {
-			t.Fatal("flaps reset first failure")
-		}
-		time.Sleep(59 * time.Second)
-		_, cancel, err := b.attempt(context.Background())
-		cancel()
-		if err != nil {
-			t.Fatalf("stopped before two hours: %v", err)
-		}
-		time.Sleep(time.Second)
-		if _, _, err = b.attempt(context.Background()); !errors.Is(err, errReconnectStopped) {
-			t.Fatalf("two-hour boundary: %v", err)
-		}
-		time.Sleep(24 * time.Hour)
-		if _, _, err = b.attempt(context.Background()); !errors.Is(err, errReconnectStopped) {
-			t.Fatal("automatically resumed")
-		}
-		if err = b.manualReset(); err != nil {
-			t.Fatal(err)
-		}
-		if err = b.failure(); err != nil {
-			t.Fatal(err)
+		if b.state.Stopped || b.state.Delay != 24*time.Hour {
+			t.Fatal("long outage did not settle at daily retries")
 		}
 		stop := b.online()
 		time.Sleep(reconnectStable)
 		synctest.Wait()
 		stop()
-		if !b.state.FirstFailure.IsZero() {
-			t.Fatal("stable acknowledged connection did not reset outage")
+		if !b.state.FirstFailure.IsZero() || b.state.Delay != 0 {
+			t.Fatal("stable recovery did not clear backoff")
 		}
 	})
 }
 
-func TestReconnectLimitPreventsRequestsAndPersistsUntilManualStart(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(503) }))
-	defer server.Close()
-	base := t.TempDir()
-	dir := filepath.Join(base, "public-connect")
-	if err := initialize("limit-fixture", dir, server.URL); err != nil {
-		t.Fatal(err)
-	}
-	c, err := load(filepath.Join(dir, "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := budgetFor(c, "ssh")
-	b.state.FirstFailure = time.Now().Add(-reconnectLimit)
-	b.saveLocked()
-	var workers sync.WaitGroup
-	for i := 0; i < 64; i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			_, err := openRelay(context.Background(), c, server.URL+"/v3/session")
-			if !errors.Is(err, errReconnectStopped) {
-				t.Errorf("got %v", err)
-			}
-		}()
-	}
-	workers.Wait()
-	if calls.Load() != 0 {
-		t.Fatal("expired retry budget sent requests")
-	}
-	if err = registerProviderUntilAvailable(context.Background(), c); !errors.Is(err, errReconnectStopped) {
-		t.Fatalf("enrollment ignored stop: %v", err)
-	}
-	// Simulate restarting the process, retaining only the private state file.
-	reconnectBudgets.Delete(c.path + "\x00ssh")
-	b = budgetFor(c, "ssh")
-	if _, _, err = b.attempt(context.Background()); !errors.Is(err, errReconnectStopped) {
-		t.Fatal("restart lost stopped state")
-	}
-	g := newGUI(base, "must-not-run")
-	if err = g.savePlan(guiRequest{Role: "connect", Listen: "127.0.0.1:22499"}, true); err != nil {
-		t.Fatal(err)
-	}
-	if err = g.ensureConnection(guiRequest{}); !errors.Is(err, errReconnectStopped) {
-		t.Fatalf("auto resume bypassed stop: %v", err)
-	}
-	before, _ := os.ReadFile(c.path)
-	if err = g.resetReconnectLimit(guiRequest{}); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err = openRelay(ctx, c, server.URL+"/v3/session")
-	if err == nil || calls.Load() != 1 {
-		t.Fatalf("manual reset did not allow exactly one request: %d %v", calls.Load(), err)
-	}
-	after, _ := os.ReadFile(c.path)
-	if string(before) != string(after) {
-		t.Fatal("manual reset changed identity")
-	}
-	if p := describeConnectionError(errReconnectStopped); p.Retryable || p.Code != "RECONNECT_STOPPED" {
-		t.Fatalf("bad stopped status: %+v", p)
-	}
+func TestReconnectLimitCooldownPersistsAndManualStartWakes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "reconnect-ssh.json")
+		c := &Config{path: filepath.Join(filepath.Dir(file), "config.json")}
+		state := reconnectState{FirstFailure: time.Now().Add(-48 * time.Hour), Delay: 4 * time.Hour, TierAttempts: 3, NextAttempt: time.Now().Add(4 * time.Hour)}
+		if err := privateJSON(file, state); err != nil {
+			t.Fatal(err)
+		}
+		b := budgetFor(c, "ssh")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if _, _, err := b.attempt(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal("restart lost cooldown", err)
+		}
+		done := make(chan error, 1)
+		go func() { _, _, err := b.attempt(context.Background()); done <- err }()
+		synctest.Wait()
+		if err := b.manualReset(); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		var saved reconnectState
+		if err := readJSON(file, &saved); err != nil || saved.Delay != 0 || !saved.NextAttempt.IsZero() {
+			t.Fatal("manual start did not persist reset", err)
+		}
+	})
 }
 
-func TestReconnectLimitHTTPStopsAtDeadlineInsideLongCooldown(t *testing.T) {
+func TestReconnectLimitHTTPKeepsCooldownAndIndependentSSH(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -138,7 +83,7 @@ func TestReconnectLimitHTTPStopsAtDeadlineInsideLongCooldown(t *testing.T) {
 	}))
 	defer server.Close()
 	dir := t.TempDir()
-	if err := initialize("http-limit-fixture", dir, server.URL); err != nil {
+	if err := initialize("http-retry-fixture", dir, server.URL); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(dir, "config.json")
@@ -149,28 +94,39 @@ func TestReconnectLimitHTTPStopsAtDeadlineInsideLongCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := budgetFor(c, "http")
-	b.state.FirstFailure = time.Now().Add(-reconnectLimit + 300*time.Millisecond)
-	b.saveLocked()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	started := time.Now()
-	if err = runHTTPPublications(ctx, config); !errors.Is(err, errReconnectStopped) {
-		t.Fatalf("publisher did not stop: %v", err)
+	_ = runHTTPPublications(ctx, config)
+	b := budgetFor(c, "http")
+	if calls.Load() != 1 || time.Until(b.state.NextAttempt) < 23*time.Hour || b.state.Stopped {
+		t.Fatal("HTTP retry schedule lost", calls.Load(), b.state)
 	}
-	if time.Since(started) > time.Second || calls.Load() != 1 {
-		t.Fatalf("deadline/requests: %s %d", time.Since(started), calls.Load())
-	}
-	if err = runHTTPPublications(ctx, config); !errors.Is(err, errReconnectStopped) || calls.Load() != 1 {
-		t.Fatal("publisher restarted itself")
-	}
-	if _, cancel, err := budgetFor(c, "ssh").attempt(ctx); err != nil {
-		t.Fatal("HTTP outage stopped independent SSH channel")
-	} else {
-		cancel()
-	}
-	if err = b.manualReset(); err != nil {
+	if _, _, err := budgetFor(c, "ssh").attempt(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReconnectLimitLegacyStopMigrationPreservesManualPlan(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "public-host")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{path: filepath.Join(dir, "config.json")}
+	file := filepath.Join(dir, "reconnect-ssh.json")
+	if err := privateJSON(file, reconnectState{FirstFailure: time.Now().Add(-72 * time.Hour), Stopped: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateJSON(filepath.Join(base, "connection-plan.json"), connectionPlan{Version: 1, Role: "host", Resume: false}); err != nil {
+		t.Fatal(err)
+	}
+	b := budgetFor(c, "ssh")
+	if b.state.Stopped {
+		t.Fatal("legacy timeout remained permanent")
+	}
+	p, err := readConnectionPlan(base)
+	if err != nil || p.Resume {
+		t.Fatal("manual stop plan changed", err)
 	}
 }
 
@@ -246,21 +202,36 @@ func TestReconnectLimitHealthyChannelRecoversAfterConcurrentFailure(t *testing.T
 	})
 }
 
-func TestReconnectLimitLiveChannelCannotUndoStoppedState(t *testing.T) {
+func TestReconnectLimitFlapsKeepLongTierAndExternalStartWakes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := &reconnectBudget{}
-		_ = b.failure()
-		time.Sleep(reconnectLimit - 30*time.Second)
-		stop := b.online()
-		defer stop()
-		time.Sleep(30 * time.Second)
-		if _, _, err := b.attempt(context.Background()); !errors.Is(err, errReconnectStopped) {
+		b := &reconnectBudget{file: filepath.Join(t.TempDir(), "reconnect-ssh.json")}
+		b.state = reconnectState{FirstFailure: time.Now(), Delay: 4 * time.Hour, TierAttempts: 3, NextAttempt: time.Now().Add(4 * time.Hour)}
+		b.saveLocked()
+		for i := 0; i < 5; i++ {
+			stop := b.online()
+			time.Sleep(30 * time.Second)
+			stop()
+			_ = b.failure()
+		}
+		if b.state.Delay != 4*time.Hour || b.state.FirstFailure.IsZero() {
+			t.Fatal("flapping cleared long tier")
+		}
+		done := make(chan error, 1)
+		go func() { _, _, err := b.attempt(context.Background()); done <- err }()
+		synctest.Wait()
+		// Simulate GUI Start in another process, without sharing Go memory.
+		if err := privateJSON(b.file, reconnectState{}); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(reconnectStable)
+		time.Sleep(time.Second)
 		synctest.Wait()
-		if !b.state.Stopped {
-			t.Fatal("health timer resumed stopped connection")
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("external Start did not wake worker")
 		}
 	})
 }

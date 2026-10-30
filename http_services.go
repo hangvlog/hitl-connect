@@ -170,7 +170,7 @@ func runHTTPPublications(ctx context.Context, config string) error {
 		return errors.New("HTTP publisher already running")
 	}
 	defer release()
-	backoff := reconnectBackoff{}
+
 	var budget *reconnectBudget
 	for ctx.Err() == nil {
 		wait := time.Second // Local configuration polling makes no relay requests.
@@ -205,8 +205,8 @@ func runHTTPPublications(ctx context.Context, config string) error {
 					}
 				}
 			}()
-			var online time.Time
-			err = serveHTTPPublicationsReady(child, c, p, func() { online = time.Now() })
+
+			err = serveHTTPPublicationsReady(child, c, p, func() {})
 			configurationChanged := child.Err() != nil && ctx.Err() == nil
 			cancel()
 			<-done
@@ -214,10 +214,8 @@ func runHTTPPublications(ctx context.Context, config string) error {
 				if stopped := budget.failure(); stopped != nil {
 					return stopped
 				}
-				if !online.IsZero() && time.Since(online) >= reconnectStable {
-					backoff = reconnectBackoff{}
-				}
-				wait = backoff.next()
+
+				wait = time.Nanosecond
 				var failure *relayFailure
 				if errors.As(err, &failure) {
 					wait = max(wait, failure.retryAfter)
@@ -225,7 +223,7 @@ func runHTTPPublications(ctx context.Context, config string) error {
 						return err
 					}
 				}
-				fmt.Fprintf(os.Stderr, "HTTP publication disconnected; reconnecting in %s without replay\n", wait)
+				fmt.Fprintln(os.Stderr, "HTTP publication disconnected; reconnecting with saved backoff without replay")
 			}
 		}
 		if budget != nil {

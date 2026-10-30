@@ -12,19 +12,36 @@ import (
 )
 
 const reconnectInitial = 5 * time.Second
-const reconnectMaximum = 5 * time.Minute
+const reconnectMaximum = 4 * time.Hour
 const reconnectStable = time.Minute
 
-// Positive jitter never makes retries earlier than the exponential schedule.
-type reconnectBackoff struct{ delay time.Duration }
+// Failures at the four-hour tier count only scheduled probes, not concurrent
+// errors from one outage. Long outages eventually retry daily, never stop.
+type reconnectBackoff struct {
+	delay        time.Duration
+	tierAttempts int
+}
 
 func (b *reconnectBackoff) next() time.Duration {
 	if b.delay == 0 {
 		b.delay = reconnectInitial
-	} else {
+	} else if b.delay < reconnectMaximum {
 		b.delay = min(reconnectMaximum, b.delay*2)
+		if b.delay == reconnectMaximum {
+			b.tierAttempts = 1
+		}
+	} else {
+		limit := 3
+		if b.delay == reconnectMaximum {
+			limit = 6
+		}
+		if b.tierAttempts >= limit && b.delay < 24*time.Hour {
+			b.delay = min(24*time.Hour, b.delay*2)
+			b.tierAttempts = 0
+		}
+		b.tierAttempts++
 	}
-	return b.delay + time.Duration(rand.Int64N(int64(b.delay/5)+1))
+	return b.delay - time.Duration(rand.Int64N(int64(b.delay/5)+1))
 }
 
 func waitReconnect(ctx context.Context, delay time.Duration) error {
@@ -68,6 +85,15 @@ type relayRetryGate struct {
 }
 
 var relayRetryGates sync.Map
+
+func (g *relayRetryGate) healthy() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.epoch++
+	g.open, g.next, g.healthySince, g.backoff = false, time.Time{}, time.Time{}, reconnectBackoff{}
+	close(g.changed)
+	g.changed = make(chan struct{})
+}
 
 func retryGate(endpoint string) *relayRetryGate {
 	u, _ := url.Parse(endpoint)
@@ -128,7 +154,10 @@ func (g *relayRetryGate) finish(epoch uint64, transportOK, unavailable bool, aft
 			g.epoch++
 			g.open = true
 			g.healthySince = time.Time{}
-			g.next = now.Add(max(g.backoff.next(), after))
+			// Durable per-channel state owns long-outage tiers. This shared
+			// admission gate only coalesces transport-failure waves.
+			delay := min(g.backoff.next(), reconnectMaximum)
+			g.next = now.Add(max(delay, after))
 		} else if transportOK {
 			g.open = false
 			g.next = time.Time{}

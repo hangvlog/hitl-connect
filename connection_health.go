@@ -21,7 +21,7 @@ func describeConnectionError(err error) *connectionProblem {
 		return p
 	}
 	if errors.Is(err, errReconnectStopped) || strings.Contains(err.Error(), "RECONNECT_STOPPED") {
-		p.Code, p.Side, p.Message, p.NextAction = "RECONNECT_STOPPED", "relay", "连续 2 小时未恢复，自动重连已停止", "请手动点击启动后重试；保留原身份和配对"
+		p.Code, p.Side, p.Message, p.NextAction = "RECONNECT_STOPPED", "relay", "旧版本保存的自动停止状态", "请手动点击启动恢复持续退避重连；保留原身份和配对"
 		return p
 	}
 	if code := strings.SplitN(err.Error(), ":", 2)[0]; regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`).MatchString(code) {
