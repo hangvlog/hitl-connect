@@ -84,6 +84,10 @@ func dialRelayWithReady(ctx context.Context, c *Config, hello Hello, opened func
 			ws.CloseNow()
 			return nil, Paired{}, errors.New("request binding failed")
 		}
+		if idle {
+			paired.stopHealthy = stopHealthy
+			stopHealthy = func() {}
+		}
 		return ws, paired, nil
 	}
 }

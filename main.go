@@ -78,13 +78,14 @@ type Hello struct {
 	RequestID  string `json:"requestId,omitempty"`
 }
 type Paired struct {
-	State     string `json:"state"`
-	Peer      string `json:"peer"`
-	Service   string `json:"service"`
-	SessionID string `json:"sessionId"`
-	RequestID string `json:"requestId,omitempty"`
-	Ready     bool   `json:"ready,omitempty"`
-	deadline  time.Time
+	State       string `json:"state"`
+	Peer        string `json:"peer"`
+	Service     string `json:"service"`
+	SessionID   string `json:"sessionId"`
+	RequestID   string `json:"requestId,omitempty"`
+	Ready       bool   `json:"ready,omitempty"`
+	deadline    time.Time
+	stopHealthy func() // v2 waiting-slot uptime transfers to the paired session
 }
 
 func privateJSON(path string, value any) error {

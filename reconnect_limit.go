@@ -22,11 +22,14 @@ type reconnectState struct {
 // Separate SSH and HTTP outage clocks: a working SSH channel must not keep a
 // broken HTTP publisher retrying forever. No credentials enter this file.
 type reconnectBudget struct {
-	mu      sync.Mutex
-	file    string
-	state   reconnectState
-	loadErr error
-	epoch   uint64
+	mu               sync.Mutex
+	file             string
+	state            reconnectState
+	loadErr          error
+	epoch            uint64
+	onlineCount      int
+	healthGeneration uint64
+	healthTimer      *time.Timer
 }
 
 var reconnectBudgets sync.Map
@@ -66,6 +69,7 @@ func (b *reconnectBudget) checkLocked(now time.Time) error {
 	if !b.state.Stopped && !b.state.FirstFailure.IsZero() && !now.Before(b.state.FirstFailure.Add(reconnectLimit)) {
 		b.state.Stopped = true
 		b.epoch++
+		b.stopHealthyTimerLocked()
 		b.saveLocked()
 	}
 	if b.state.Stopped {
@@ -95,7 +99,11 @@ func (b *reconnectBudget) failure() error {
 		b.state.FirstFailure = time.Now()
 		b.saveLocked()
 	}
-	return b.checkLocked(time.Now())
+	err := b.checkLocked(time.Now())
+	if err == nil {
+		b.scheduleHealthyLocked()
+	}
+	return err
 }
 
 func (b *reconnectBudget) result(err error, parent context.Context) error {
@@ -126,22 +134,54 @@ func (b *reconnectBudget) wait(ctx context.Context, delay time.Duration) error {
 	return err
 }
 
-// Only an acknowledged connection that stays online for a full minute clears
-// the outage, never an HTTP 101, a registration response or elapsed idle time.
-func (b *reconnectBudget) online() func() {
-	b.mu.Lock()
-	epoch := b.epoch
-	closed := false
-	b.mu.Unlock()
-	timer := time.AfterFunc(reconnectStable, func() {
+func (b *reconnectBudget) stopHealthyTimerLocked() {
+	if b.healthTimer != nil {
+		b.healthTimer.Stop()
+		b.healthTimer = nil
+	}
+}
+
+// Overlapping acknowledged connections share uptime. Re-arm after a failure,
+// rather than permanently invalidating a still-live control/idle connection.
+func (b *reconnectBudget) scheduleHealthyLocked() {
+	b.stopHealthyTimerLocked()
+	if b.onlineCount == 0 || b.state.Stopped || b.state.FirstFailure.IsZero() {
+		return
+	}
+	epoch, generation := b.epoch, b.healthGeneration
+	b.healthTimer = time.AfterFunc(reconnectStable, func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		if !closed && b.epoch == epoch && !b.state.Stopped {
+		if b.onlineCount > 0 && b.epoch == epoch && b.healthGeneration == generation && !b.state.Stopped {
 			b.state = reconnectState{}
 			b.saveLocked()
+			b.healthTimer = nil
 		}
 	})
-	return func() { b.mu.Lock(); closed = true; timer.Stop(); b.mu.Unlock() }
+}
+
+// Only continuous acknowledged uptime clears the outage, never an HTTP 101.
+func (b *reconnectBudget) online() func() {
+	b.mu.Lock()
+	generation := b.healthGeneration
+	closed := false
+	b.onlineCount++
+	if b.onlineCount == 1 {
+		b.scheduleHealthyLocked()
+	}
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if !closed && b.healthGeneration == generation {
+			b.onlineCount--
+			if b.onlineCount == 0 {
+				b.stopHealthyTimerLocked()
+				b.healthGeneration++
+			}
+		}
+		closed = true
+	}
 }
 
 // Only the explicit local start action resets a stopped clock. Automatic
@@ -150,6 +190,7 @@ func (b *reconnectBudget) manualReset() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.epoch++
+	b.stopHealthyTimerLocked()
 	b.state = reconnectState{}
 	b.loadErr = nil
 	b.saveLocked()

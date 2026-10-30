@@ -19,7 +19,84 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
+
+// Run a real SSH command over the provider's TLS/framing path. The command
+// succeeds before the caller closes its short-lived encrypted session.
+func TestProviderShortSSHSessionDoesNotStartOutage(t *testing.T) {
+	key, host := loginSigner(t), loginSigner(t)
+	address, _, _ := loginFixture(t, key.PublicKey(), "fixture\\tester\r\n", 0, host)
+	dir := t.TempDir()
+	if err := initialize("session-fixture", dir, "https://relay.example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := load(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity Identity
+	if err = readJSON(filepath.Join(dir, "identity.json"), &identity); err != nil {
+		t.Fatal(err)
+	}
+	// A generic loopback service uses the same system-SSH forwarding path,
+	// with fixture mutual TLS trust, without installing OS accounts/services.
+	service := Service{Target: address, Allow: []string{identity.ID}}
+	c.Peers[identity.ID] = Peer{Certificate: identity.Certificate, Services: []string{"fixture"}}
+	c.Services["fixture"] = service
+	paired := Paired{State: "paired", Peer: identity.ID, Service: "fixture"}
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		ws, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		acceptSession(r.Context(), c, ws, paired, service)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	encrypted, err := secure(ctx, c, ws, paired, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer encrypted.Close()
+	conn, channels, requests, err := ssh.NewClientConn(&sshFrameConn{Conn: encrypted}, address, &ssh.ClientConfig{
+		User: "tester", Auth: []ssh.AuthMethod{ssh.PublicKeys(key)}, HostKeyCallback: ssh.FixedHostKey(host.PublicKey()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := ssh.NewClient(conn, channels, requests)
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := session.Output("whoami")
+	if err != nil || string(output) != "fixture\\tester\r\n" {
+		t.Fatalf("SSH command: %q %v", output, err)
+	}
+	session.Close()
+	client.Close()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("provider session did not finish")
+	}
+	b := budgetFor(c, "ssh")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.state.FirstFailure.IsZero() {
+		t.Fatal("successful short SSH command started provider outage clock")
+	}
+}
 
 func TestSecureFailureClassificationAndRedaction(t *testing.T) {
 	for _, tc := range []struct {

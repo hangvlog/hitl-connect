@@ -196,3 +196,71 @@ func TestReconnectLimitCancellationAndStateReadFailure(t *testing.T) {
 		t.Fatal("unreadable state allowed network")
 	}
 }
+
+// A busy v2 provider replaces each waiting slot with a short session while
+// opening the next slot. Their overlapping lifetimes are continuous uptime.
+func TestReconnectLimitShortSessionHandoffsClearOutage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &reconnectBudget{}
+		_ = b.failure()
+		stop := b.online()
+		for i := 0; i < 1500; i++ { // 125 minutes, beyond the original outage deadline.
+			time.Sleep(5 * time.Second)
+			next := b.online()
+			stop()
+			stop = next
+			_, cancel, err := b.attempt(context.Background())
+			cancel()
+			if err != nil {
+				t.Fatalf("healthy short sessions stopped at handoff %d: %v", i, err)
+			}
+		}
+		synctest.Wait()
+		stop()
+		if !b.state.FirstFailure.IsZero() {
+			t.Fatal("continuous acknowledged uptime across short sessions did not clear outage")
+		}
+	})
+}
+
+func TestReconnectLimitHealthyChannelRecoversAfterConcurrentFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &reconnectBudget{}
+		stop := b.online()
+		defer stop()
+		time.Sleep(10 * time.Second)
+		_ = b.failure()
+		time.Sleep(59 * time.Second)
+		synctest.Wait()
+		b.mu.Lock()
+		cleared := b.state.FirstFailure.IsZero()
+		b.mu.Unlock()
+		if cleared {
+			t.Fatal("failure cleared without a full healthy minute")
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if !b.state.FirstFailure.IsZero() {
+			t.Fatal("a live acknowledged channel never recovered after a concurrent failure")
+		}
+	})
+}
+
+func TestReconnectLimitLiveChannelCannotUndoStoppedState(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := &reconnectBudget{}
+		_ = b.failure()
+		time.Sleep(reconnectLimit - 30*time.Second)
+		stop := b.online()
+		defer stop()
+		time.Sleep(30 * time.Second)
+		if _, _, err := b.attempt(context.Background()); !errors.Is(err, errReconnectStopped) {
+			t.Fatal(err)
+		}
+		time.Sleep(reconnectStable)
+		synctest.Wait()
+		if !b.state.Stopped {
+			t.Fatal("health timer resumed stopped connection")
+		}
+	})
+}

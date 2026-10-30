@@ -241,6 +241,9 @@ func providerSlot(idleCtx, sessionCtx context.Context, c *Config, generation str
 		backoff = reconnectBackoff{}
 		if !c.runtime.begin() {
 			<-active
+			if paired.stopHealthy != nil {
+				paired.stopHealthy()
+			}
 			ws.CloseNow()
 			continue
 		}

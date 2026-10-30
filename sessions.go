@@ -17,11 +17,15 @@ import (
 
 func acceptSession(ctx context.Context, c *Config, ws *websocket.Conn, paired Paired, service Service) {
 	defer ws.CloseNow()
+	if paired.stopHealthy != nil {
+		defer paired.stopHealthy()
+	}
 	metrics := &sessionMetrics{}
 	finish := sessionReporter(c, paired, "accept")
 	stage := "tls"
 	var result error
-	defer func() { _ = budgetFor(c, "ssh").result(result, ctx) }()
+	// A rejected, interrupted or completed peer session is not a provider outage.
+	// Only provider registration/control/accept failures consume its retry budget.
 	defer func() { finish(stage, result, metrics) }()
 	if !slices.Contains(service.Allow, paired.Peer) && service.PairingCA == "" {
 		result = errors.New("peer denied")
@@ -242,7 +246,11 @@ func forwardConnection(ctx, dialCtx context.Context, c *Config, peerID, service 
 	finish := sessionReporter(c, paired, "dial")
 	stage := "tls"
 	var result error
-	defer func() { _ = budgetFor(c, "ssh").result(result, ctx) }()
+	defer func() {
+		if stage != "stream" {
+			_ = budgetFor(c, "ssh").result(result, ctx)
+		}
+	}()
 	defer func() { finish(stage, result, metrics) }()
 	encrypted, err := secure(ctx, c, ws, paired, false)
 	if err != nil {

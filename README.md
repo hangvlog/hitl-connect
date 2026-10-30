@@ -99,6 +99,13 @@ do not reset them. Click Start (or run `agent start --dir <existing-profile>`)
 to explicitly retry; CLI-only HTTP publishers use `http resume --config ...`.
 This preserves identities and does not replay interrupted commands or requests.
 
+Provider retry budgets track registration, control and waiting-slot failures.
+An individual peer's authentication, command, disconnect or stream error is
+reported for that session without stopping the provider. Overlapping acknowledged
+idle slots and sessions share the healthy minute across v2 pairing handoffs;
+a failure restarts that minute on any still-live channel. Caller stream closure
+also does not count as a new connection-establishment failure.
+
 CLI equivalent (existing provider identity required):
 
 ```sh

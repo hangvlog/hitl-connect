@@ -1,7 +1,7 @@
 name: Validate relay outage backoff
 on:
   push:
-    branches: [codex/relay-retry-backoff, codex/reconnect-two-hour-limit]
+    branches: [codex/relay-retry-backoff, codex/reconnect-two-hour-limit, codex/ssh-reconnect-session-isolation]
   workflow_dispatch:
 permissions:
   contents: read
@@ -42,12 +42,26 @@ jobs:
       - name: Test outage, concurrency, recovery and existing transport on Windows
         shell: pwsh
         run: |
-          go test . -run 'Test(HTTPPublication|Reconnect|RelayOutage|RelayCooldown|ProviderStartup|ProviderRegistration|RecoveryLock|DialPairing|RelayEndpoints|RelayRejects|PairingStatus|OpenRelayReports|ProviderDrain|ForwardWaits)' -count=1 -v 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/acceptance.txt"
+          go test . -run 'Test(HTTPPublication|Reconnect|RelayOutage|RelayCooldown|ProviderShortSSH|ProviderStartup|ProviderRegistration|RecoveryLock|DialPairing|RelayEndpoints|RelayRejects|PairingStatus|OpenRelayReports|ProviderDrain|ForwardWaits|ReusableFraming|SessionClose)' -count=1 -v 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/acceptance.txt"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Reproduce short-session failures on the deployed source
+        shell: pwsh
+        run: |
+          $baseline = "$env:RUNNER_TEMP/short-session-baseline"
+          git worktree add --detach $baseline a3da076138c438cb3fe8381300158f3617ce9242
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item reconnect_limit_test.go,transport_test.go $baseline
+          Push-Location $baseline
+          $result = go test . -run '^Test(ReconnectLimitShortSessionHandoffsClearOutage|ReconnectLimitHealthyChannelRecoversAfterConcurrentFailure|ProviderShortSSHSessionDoesNotStartOutage)$' -count=1 -v 2>&1
+          $code = $LASTEXITCODE
+          Pop-Location
+          $result | Tee-Object -FilePath "$env:RUNNER_TEMP/baseline.txt"
+          if ($code -eq 0 -or "$result" -notmatch 'successful short SSH command started provider outage clock' -or "$result" -notmatch 'healthy short sessions stopped at handoff' -or "$result" -notmatch 'never recovered after a concurrent failure') { throw 'Original failures were not reproduced' }
+          exit 0
       - name: Build and exercise committed Windows executable
         shell: pwsh
         run: |
-          python build-windows-binaries.py "$env:RUNNER_TEMP/output/HITL-Connect-Windows" 2026.10.28-agent.2 --installer-helper
+          python build-windows-binaries.py "$env:RUNNER_TEMP/output/HITL-Connect-Windows" 2026.10.30-agent.1 --installer-helper
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP/output/HITL-Connect-Windows/hitl-connect-cli.exe" agent help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
